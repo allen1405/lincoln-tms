@@ -620,23 +620,21 @@ const Inventory = () => (
 const App = () => {
   const [user,setUser] = useState(null);
   const [page,setPage] = useState("dashboard");
-  const [wos,setWos] = useState(INIT_WOS);
-  const [customers,setCustomers] = useState(INIT_CUSTOMERS);
-  const [appts,setAppts] = useState(INIT_APPTS);
+  const [customers,setCustomers] = useState([]);
 
   if(!user) return <Login onLogin={setUser}/>;
 
   const pages = {
-    dashboard: <Dashboard wos={wos} customers={customers} user={user}/>,
-    workorders: <WorkOrders wos={wos} setWos={setWos} customers={customers}/>,
-    customers: <Customers customers={customers} setCustomers={setCustomers}/>,
-    appointments: <Appointments appts={appts} setAppts={setAppts} customers={customers}/>,
+    dashboard: <Dashboard user={user}/>,
+    workorders: <WorkOrders customers={customers}/>,
+    customers: <Customers onCustomersLoaded={setCustomers}/>,
+    appointments: <Appointments customers={customers}/>,
     employees: <EmployeesPage/>,
-    salaries: <Salaries wos={wos}/>,
+    salaries: <Salaries/>,
     inventory: <Inventory/>,
-    reports: <Reports wos={wos}/>,
-    invoices: <Invoices wos={wos}/>,
-    estimates: <Estimates wos={wos}/>,
+    reports: <Reports/>,
+    invoices: <Invoices/>,
+    estimates: <Estimates/>,
   };
 
   return (
