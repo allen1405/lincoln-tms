@@ -7,7 +7,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
- <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f6f9; }
@@ -620,21 +619,23 @@ const Inventory = () => (
 const App = () => {
   const [user,setUser] = useState(null);
   const [page,setPage] = useState("dashboard");
-  const [customers,setCustomers] = useState([]);
+  const [wos,setWos] = useState(INIT_WOS);
+  const [customers,setCustomers] = useState(INIT_CUSTOMERS);
+  const [appts,setAppts] = useState(INIT_APPTS);
 
   if(!user) return <Login onLogin={setUser}/>;
 
   const pages = {
-    dashboard: <Dashboard user={user}/>,
-    workorders: <WorkOrders customers={customers}/>,
-    customers: <Customers onCustomersLoaded={setCustomers}/>,
-    appointments: <Appointments customers={customers}/>,
+    dashboard: <Dashboard wos={wos} customers={customers} user={user}/>,
+    workorders: <WorkOrders wos={wos} setWos={setWos} customers={customers}/>,
+    customers: <Customers customers={customers} setCustomers={setCustomers}/>,
+    appointments: <Appointments appts={appts} setAppts={setAppts} customers={customers}/>,
     employees: <EmployeesPage/>,
-    salaries: <Salaries/>,
+    salaries: <Salaries wos={wos}/>,
     inventory: <Inventory/>,
-    reports: <Reports/>,
-    invoices: <Invoices/>,
-    estimates: <Estimates/>,
+    reports: <Reports wos={wos}/>,
+    invoices: <Invoices wos={wos}/>,
+    estimates: <Estimates wos={wos}/>,
   };
 
   return (
