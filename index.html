@@ -28,6 +28,22 @@ const WO_STATUSES = ["Waiting list","Check-in","Inspection","In progress","Waiti
 const {useState,useEffect,useContext,createContext} = React;
 const UserCtx = createContext(null);
 
+// ─── AUDIT LOG HELPER ─────────────────────────────────────────────────────────
+// Fire-and-forget. Called from every write site. user can be null for system actions.
+const audit = (user, action, entity_type, entity_id, entity_label, details = "") => {
+  sb.from('audit_log').insert([{
+    user_id: user?.id ?? null,
+    user_name: user?.name || 'system',
+    action,
+    entity_type,
+    entity_id: entity_id != null ? String(entity_id) : null,
+    entity_label: entity_label || '',
+    details: details || ''
+  }]).then(r => { if (r.error) console.error('audit:', r.error); });
+};
+const AUDIT_ACTIONS = ["create","update","delete","status_change"];
+const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply"];
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const SC = {"Waiting list":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"},"Check-in":{bg:"#eafaf1",c:"#27ae60",b:"#a9dfbf"},"Inspection":{bg:"#fef9e7",c:"#d4ac0d",b:"#f9e79f"},"In progress":{bg:"#f4ecf7",c:"#8e44ad",b:"#d7bde2"},"Waiting for parts":{bg:"#fef5e7",c:"#ca6f1e",b:"#fad7a0"},"Done":{bg:"#eafaf1",c:"#1e8449",b:"#a9dfbf"},"Scheduled":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"}};
 const Badge = ({s}) => { const x=SC[s]||{bg:"#f0f0f0",c:"#666",b:"#ddd"}; return <span style={{background:x.bg,color:x.c,border:`1px solid ${x.b}`,padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>{s}</span>; };
@@ -102,6 +118,7 @@ const NAV = [
   {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT"},
   {id:"invoices",label:"Invoices",icon:"🧾",s:"SUPPORT"},
   {id:"estimates",label:"Estimates",icon:"📋",s:"SUPPORT"},
+  {id:"auditlog",label:"Audit Log",icon:"🛡️",s:"SUPPORT"},
   {id:"settings",label:"Settings",icon:"⚙️",s:"SUPPORT"},
 ];
 const Sidebar = ({active,onNav,user,onLogout}) => (
@@ -225,17 +242,31 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
 
   const save=async()=>{
     if(!form.type) return;
-    await sb.from('equipment').insert([{...form,customer_id:customerId,customer_name:customerName}]);
+    const {data:inserted}=await sb.from('equipment').insert([{...form,customer_id:customerId,customer_name:customerName}]).select().single();
+    audit(user,"create","equipment",inserted?.id,`${customerName} — ${form.type} ${form.year} ${form.make} ${form.model}`.trim(),form.vin?`VIN: ${form.vin}`:"");
     setAdding(false); setForm({type:"Truck",year:"",make:"",model:"",vin:"",license_plate:"",notes:""}); load();
   };
-  const del=async(id)=>{ if(confirm("Delete this equipment?")){ await sb.from('equipment').delete().eq('id',id); load(); }};
+  const del=async(id)=>{
+    if(!confirm("Delete this equipment?"))return;
+    const prev=list.find(e=>e.id===id);
+    await sb.from('equipment').delete().eq('id',id);
+    audit(user,"delete","equipment",id,`${customerName} — ${prev?.type||""} ${prev?.year||""} ${prev?.make||""} ${prev?.model||""}`.trim());
+    load();
+  };
   const openEquip=async(e)=>{ setViewEquip(e); await loadReminders(e.id); };
   const addReminder=async()=>{
     if(!remForm.note) return;
-    await sb.from('reminders').insert([{equipment_id:viewEquip.id,customer_name:customerName,equipment_label:`${viewEquip.year} ${viewEquip.make} ${viewEquip.model||viewEquip.type} (${viewEquip.vin||'no VIN'})`,note:remForm.note,reminder_date:remForm.reminder_date||null,auto_days:remForm.auto_days?Number(remForm.auto_days):null,created_by:user.name}]);
+    const eqLabel=`${viewEquip.year} ${viewEquip.make} ${viewEquip.model||viewEquip.type} (${viewEquip.vin||'no VIN'})`;
+    const {data:inserted}=await sb.from('reminders').insert([{equipment_id:viewEquip.id,customer_name:customerName,equipment_label:eqLabel,note:remForm.note,reminder_date:remForm.reminder_date||null,auto_days:remForm.auto_days?Number(remForm.auto_days):null,created_by:user.name}]).select().single();
+    audit(user,"create","reminder",inserted?.id,`${customerName} — ${eqLabel}`,remForm.note.slice(0,120));
     setRemForm({note:"",reminder_date:"",auto_days:""}); setAddingRem(false); loadReminders(viewEquip.id);
   };
-  const completeRem=async(id)=>{ await sb.from('reminders').update({completed:true}).eq('id',id); loadReminders(viewEquip.id); };
+  const completeRem=async(id)=>{
+    const prev=reminders.find(r=>r.id===id);
+    await sb.from('reminders').update({completed:true}).eq('id',id);
+    audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
+    loadReminders(viewEquip.id);
+  };
   const label=e=>`${e.year||''} ${e.make||''} ${e.model||e.type}`.trim();
 
   if(viewEquip) return (
@@ -359,22 +390,36 @@ const WorkOrders = () => {
     if(!form.customer||!form.unit_number) return;
     const id=`WO-${String(wos.length+1).padStart(3,"0")}`;
     await sb.from('work_orders').insert([{...form,id,labor:Number(form.labor),parts:Number(form.parts)}]);
+    audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,`status: ${form.status}`);
     setModal(false);setForm(empty);loadWos();
   };
   const addCustomer=async()=>{
     if(!newCust.name) return;
-    await sb.from('customers').insert([newCust]);
+    const {data:inserted}=await sb.from('customers').insert([newCust]).select().single();
+    audit(user,"create","customer",inserted?.id,newCust.name);
     await loadCustomers();
     setForm(p=>({...p,customer:newCust.name}));
     setNewCust({name:"",address:"",phone:"",email:"",notes:""});
     setNewCustModal(false);
   };
-  const upd=async(id,status)=>{await sb.from('work_orders').update({status}).eq('id',id);loadWos();};
-  const del=async(id)=>{if(confirm("Delete this WO?")){await sb.from('work_orders').delete().eq('id',id);loadWos();}};
+  const upd=async(id,status)=>{
+    const prev=wos.find(w=>w.id===id);
+    await sb.from('work_orders').update({status}).eq('id',id);
+    audit(user,"status_change","work_order",id,`${id} — ${prev?.customer||""}`,`status: "${prev?.status||""}" → "${status}"`);
+    loadWos();
+  };
+  const del=async(id)=>{
+    if(!confirm("Delete this WO?"))return;
+    const prev=wos.find(w=>w.id===id);
+    await sb.from('work_orders').delete().eq('id',id);
+    audit(user,"delete","work_order",id,`${id} — ${prev?.customer||""} (${prev?.unit_number||""})`);
+    loadWos();
+  };
   const openNotes=async(wo)=>{setNotesModal(wo);await loadNotes(wo.id);};
   const addNote=async()=>{
     if(!noteText.trim()) return;
     await sb.from('notes').insert([{work_order_id:notesModal.id,customer_name:notesModal.customer,content:noteText.trim(),created_by:user.name}]);
+    audit(user,"create","note",notesModal.id,`${notesModal.id} — ${notesModal.customer}`,noteText.trim().slice(0,120));
     setNoteText(""); loadNotes(notesModal.id);
   };
   const loadJobs=async(woId)=>{const{data}=await sb.from('jobs').select('*').eq('work_order_id',woId).order('created_at');setJobsList(data||[]);};
@@ -382,20 +427,46 @@ const WorkOrders = () => {
   const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");await loadJobs(wo.id);await loadNotes(wo.id);await loadParts(wo.id);};
   const addJob=async(name)=>{
     if(!name.trim()) return;
-    await sb.from('jobs').insert([{work_order_id:jobsModal.id,name:name.trim(),status:"Pending",created_by:user.name}]);
+    const {data:inserted}=await sb.from('jobs').insert([{work_order_id:jobsModal.id,name:name.trim(),status:"Pending",created_by:user.name}]).select().single();
+    audit(user,"create","job",inserted?.id,`${jobsModal.id} — ${name.trim()}`);
     setNewJobName(""); setCustomJob(""); loadJobs(jobsModal.id);
   };
-  const updJob=async(id,status)=>{await sb.from('jobs').update({status}).eq('id',id);loadJobs(jobsModal.id);};
-  const delJob=async(id)=>{await sb.from('jobs').delete().eq('id',id);loadJobs(jobsModal.id);};
+  const updJob=async(id,status)=>{
+    const prev=jobsList.find(j=>j.id===id);
+    await sb.from('jobs').update({status}).eq('id',id);
+    audit(user,"status_change","job",id,`${jobsModal.id} — ${prev?.name||""}`,`status: "${prev?.status||""}" → "${status}"`);
+    loadJobs(jobsModal.id);
+  };
+  const delJob=async(id)=>{
+    const prev=jobsList.find(j=>j.id===id);
+    await sb.from('jobs').delete().eq('id',id);
+    audit(user,"delete","job",id,`${jobsModal.id} — ${prev?.name||""}`);
+    loadJobs(jobsModal.id);
+  };
   const addPart=async()=>{
     if(!partForm.name.trim()) return;
-    await sb.from('parts').insert([{...partForm,work_order_id:jobsModal.id,quantity:Number(partForm.quantity),eta_delivery:partForm.eta_delivery||null,created_by:user.name}]);
+    const {data:inserted}=await sb.from('parts').insert([{...partForm,work_order_id:jobsModal.id,quantity:Number(partForm.quantity),eta_delivery:partForm.eta_delivery||null,created_by:user.name}]).select().single();
+    audit(user,"create","part",inserted?.id,`${jobsModal.id} — ${partForm.name.trim()}`,`qty: ${partForm.quantity}, status: ${partForm.status}`);
     setPartForm({name:"",description:"",part_number:"",quantity:1,status:"Pending Order",eta_delivery:""});
     setAddingPart(false); loadParts(jobsModal.id);
   };
-  const updPart=async(id,field,val)=>{await sb.from('parts').update({[field]:val}).eq('id',id);loadParts(jobsModal.id);};
-  const delPart=async(id)=>{if(confirm("Delete part?")){await sb.from('parts').delete().eq('id',id);loadParts(jobsModal.id);}};
-  const saveShopSupply=async()=>{await sb.from('work_orders').update({shop_supply:shopSupply}).eq('id',jobsModal.id);};
+  const updPart=async(id,field,val)=>{
+    const prev=partsList.find(p=>p.id===id);
+    await sb.from('parts').update({[field]:val}).eq('id',id);
+    audit(user,"update","part",id,`${jobsModal.id} — ${prev?.name||""}`,`${field}: "${prev?.[field]??""}" → "${val??""}"`);
+    loadParts(jobsModal.id);
+  };
+  const delPart=async(id)=>{
+    if(!confirm("Delete part?"))return;
+    const prev=partsList.find(p=>p.id===id);
+    await sb.from('parts').delete().eq('id',id);
+    audit(user,"delete","part",id,`${jobsModal.id} — ${prev?.name||""}`);
+    loadParts(jobsModal.id);
+  };
+  const saveShopSupply=async()=>{
+    await sb.from('work_orders').update({shop_supply:shopSupply}).eq('id',jobsModal.id);
+    audit(user,"update","shop_supply",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`length: ${shopSupply.length} chars`);
+  };
   const selEquip=(e)=>{
     setForm(p=>({...p,unit_number:e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
     setEquipModal(null);
@@ -549,7 +620,12 @@ const WorkOrders = () => {
                                     type="number"
                                     step="0.25"
                                     defaultValue={j.labor||0}
-                                    onBlur={async e=>{await sb.from('jobs').update({labor:Number(e.target.value)}).eq('id',j.id);}}
+                                    onBlur={async e=>{
+                                      const v=Number(e.target.value);
+                                      if(v===Number(j.labor||0))return;
+                                      await sb.from('jobs').update({labor:v}).eq('id',j.id);
+                                      audit(user,"update","job",j.id,`${jobsModal.id} — ${j.name}`,`labor: ${j.labor||0}h → ${v}h`);
+                                    }}
                                     style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,background:"#f0faf4",fontWeight:600,color:"#27ae60"}}
                                   />
                                 </div>
@@ -557,7 +633,12 @@ const WorkOrders = () => {
                                   <div style={{fontSize:11,fontWeight:600,color:"#aaa",marginBottom:4}}>📝 JOB NOTES</div>
                                   <textarea
                                     defaultValue={j.notes||""}
-                                    onBlur={async e=>{await sb.from('jobs').update({notes:e.target.value}).eq('id',j.id);}}
+                                    onBlur={async e=>{
+                                      const v=e.target.value;
+                                      if(v===(j.notes||""))return;
+                                      await sb.from('jobs').update({notes:v}).eq('id',j.id);
+                                      audit(user,"update","job",j.id,`${jobsModal.id} — ${j.name}`,`notes updated (${v.length} chars)`);
+                                    }}
                                     placeholder="Add details, parts needed, measurements..."
                                     rows={2}
                                     style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,resize:"vertical",background:"#fffdf5",color:"#444"}}
@@ -644,6 +725,7 @@ const WorkOrders = () => {
               </div>
             </div>
           )}
+          {jobTab==="notes"&&(
             <div>
               <div style={{maxHeight:300,overflowY:"auto",marginBottom:16}}>
                 {notesList.length===0?<p style={{color:"#aaa",fontSize:13}}>No notes yet.</p>:notesList.map(n=>(
@@ -655,7 +737,13 @@ const WorkOrders = () => {
               </div>
               <div style={{borderTop:"1px solid #eee",paddingTop:16}}>
                 <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} placeholder="Add a note..." rows={3} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,resize:"vertical",marginBottom:8}}/>
-                <button onClick={()=>{if(!noteText.trim())return;sb.from('notes').insert([{work_order_id:jobsModal.id,customer_name:jobsModal.customer,content:noteText.trim(),created_by:user.name}]).then(()=>{setNoteText("");loadNotes(jobsModal.id);});}} style={{padding:"9px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add Note</button>
+                <button onClick={()=>{
+                  const t=noteText.trim(); if(!t)return;
+                  sb.from('notes').insert([{work_order_id:jobsModal.id,customer_name:jobsModal.customer,content:t,created_by:user.name}]).then(()=>{
+                    audit(user,"create","note",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,t.slice(0,120));
+                    setNoteText("");loadNotes(jobsModal.id);
+                  });
+                }} style={{padding:"9px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add Note</button>
               </div>
             </div>
           )}
@@ -684,6 +772,7 @@ const WorkOrders = () => {
 
 // ─── CUSTOMERS ────────────────────────────────────────────────────────────────
 const Customers = () => {
+  const user = useContext(UserCtx);
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
   const [equipTarget,setEquipTarget]=useState(null);
@@ -691,8 +780,19 @@ const Customers = () => {
   const load=async()=>{const{data}=await sb.from('customers').select('*').order('created_at',{ascending:false});setList(data||[]);setLoading(false);};
   useEffect(()=>{load();},[]);
   const filtered=list.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.email.toLowerCase().includes(search.toLowerCase()));
-  const add=async()=>{if(!form.name)return;await sb.from('customers').insert([form]);setModal(false);setForm({name:"",address:"",phone:"",email:"",notes:""});load();};
-  const del=async(id)=>{if(confirm("Delete customer?")){await sb.from('customers').delete().eq('id',id);load();}};
+  const add=async()=>{
+    if(!form.name)return;
+    const {data:inserted}=await sb.from('customers').insert([form]).select().single();
+    audit(user,"create","customer",inserted?.id,form.name);
+    setModal(false);setForm({name:"",address:"",phone:"",email:"",notes:""});load();
+  };
+  const del=async(id)=>{
+    if(!confirm("Delete customer?"))return;
+    const prev=list.find(c=>c.id===id);
+    await sb.from('customers').delete().eq('id',id);
+    audit(user,"delete","customer",id,prev?.name||"");
+    load();
+  };
   if(loading) return <Loading/>;
   return (
     <div>
@@ -745,13 +845,25 @@ const Customers = () => {
 
 // ─── APPOINTMENTS ─────────────────────────────────────────────────────────────
 const Appointments = () => {
+  const user = useContext(UserCtx);
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [customers,setCustomers]=useState([]); const [modal,setModal]=useState(false);
   const [form,setForm]=useState({company:"",unit_number:"",vin:"",date:"",status:"Scheduled"});
   const load=async()=>{const{data}=await sb.from('appointments').select('*').order('date',{ascending:true});setList(data||[]);setLoading(false);};
   useEffect(()=>{load();sb.from('customers').select('name').order('name').then(({data})=>setCustomers(data||[]));},[]);
-  const add=async()=>{if(!form.company)return;await sb.from('appointments').insert([form]);setModal(false);setForm({company:"",unit_number:"",vin:"",date:"",status:"Scheduled"});load();};
-  const del=async(id)=>{if(confirm("Delete?")){await sb.from('appointments').delete().eq('id',id);load();}};
+  const add=async()=>{
+    if(!form.company)return;
+    const {data:inserted}=await sb.from('appointments').insert([form]).select().single();
+    audit(user,"create","appointment",inserted?.id,`${form.company} ${form.unit_number?`(${form.unit_number})`:""}`,`date: ${form.date||"—"}, status: ${form.status}`);
+    setModal(false);setForm({company:"",unit_number:"",vin:"",date:"",status:"Scheduled"});load();
+  };
+  const del=async(id)=>{
+    if(!confirm("Delete?"))return;
+    const prev=list.find(a=>a.id===id);
+    await sb.from('appointments').delete().eq('id',id);
+    audit(user,"delete","appointment",id,`${prev?.company||""} ${prev?.unit_number?`(${prev.unit_number})`:""}`);
+    load();
+  };
   if(loading) return <Loading/>;
   return (
     <div>
@@ -796,11 +908,23 @@ const Appointments = () => {
 
 // ─── REMINDERS PAGE ───────────────────────────────────────────────────────────
 const RemindersPage = () => {
+  const user = useContext(UserCtx);
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true); const [filter,setFilter]=useState("pending");
   const load=async()=>{const{data}=await sb.from('reminders').select('*').order('reminder_date',{ascending:true});setList(data||[]);setLoading(false);};
   useEffect(()=>{load();},[]);
-  const complete=async(id)=>{await sb.from('reminders').update({completed:true}).eq('id',id);load();};
-  const del=async(id)=>{if(confirm("Delete reminder?")){await sb.from('reminders').delete().eq('id',id);load();}};
+  const complete=async(id)=>{
+    const prev=list.find(r=>r.id===id);
+    await sb.from('reminders').update({completed:true}).eq('id',id);
+    audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
+    load();
+  };
+  const del=async(id)=>{
+    if(!confirm("Delete reminder?"))return;
+    const prev=list.find(r=>r.id===id);
+    await sb.from('reminders').delete().eq('id',id);
+    audit(user,"delete","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`);
+    load();
+  };
   const today=new Date().toISOString().split('T')[0];
   const filtered=list.filter(r=>filter==="all"?true:filter==="pending"?!r.completed:filter==="overdue"?!r.completed&&r.reminder_date&&r.reminder_date<today:r.completed);
   if(loading) return <Loading/>;
@@ -878,13 +1002,22 @@ const Settings = () => {
   useEffect(()=>{load();},[]);
   const add=async()=>{
     if(!form.name||!form.email||!form.password) return;
-    await sb.from('users').insert([{...form,active:true}]);
+    const {data:inserted}=await sb.from('users').insert([{...form,active:true}]).select().single();
+    audit(currentUser,"create","user",inserted?.id,form.name,`email: ${form.email}, role: ${form.role}`);
     setModal(false);setForm({name:"",email:"",password:"",role:"mechanic"});load();
   };
-  const toggleActive=async(u)=>{await sb.from('users').update({active:!u.active}).eq('id',u.id);load();};
+  const toggleActive=async(u)=>{
+    await sb.from('users').update({active:!u.active}).eq('id',u.id);
+    audit(currentUser,"status_change","user",u.id,u.name,`active: ${u.active} → ${!u.active}`);
+    load();
+  };
   const resetPass=async(u)=>{
     const np=prompt(`New password for ${u.name}:`);
-    if(np){await sb.from('users').update({password:np}).eq('id',u.id);alert("Password updated!");}
+    if(np){
+      await sb.from('users').update({password:np}).eq('id',u.id);
+      audit(currentUser,"update","user",u.id,u.name,"password reset");
+      alert("Password updated!");
+    }
   };
   if(loading) return <Loading/>;
   if(currentUser.role!=="admin") return <div style={{padding:40,textAlign:"center",color:"#888"}}>⛔ Admin access only.</div>;
@@ -1025,6 +1158,120 @@ const Estimates = () => {
 };
 const Inventory = () => (<div><h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Inventory</h1><div style={{background:"#fff",borderRadius:12,padding:60,textAlign:"center",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><div style={{fontSize:48,marginBottom:16}}>🔧</div><h3 style={{margin:"0 0 8px"}}>Coming Soon</h3><p style={{color:"#888"}}>Parts catalog, stock levels, reorder alerts.</p></div></div>);
 
+// ─── AUDIT LOG ────────────────────────────────────────────────────────────────
+const AuditLog = () => {
+  const currentUser = useContext(UserCtx);
+  const [logs,setLogs] = useState([]);
+  const [users,setUsers] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [hasMore,setHasMore] = useState(false);
+  const [filters,setFilters] = useState({user_id:"",entity_type:"",action:"",from:"",to:""});
+  const PAGE = 100;
+
+  const buildQuery = (append) => {
+    let q = sb.from('audit_log').select('*').order('created_at',{ascending:false}).limit(PAGE+1);
+    if(filters.user_id) q = q.eq('user_id', filters.user_id);
+    if(filters.entity_type) q = q.eq('entity_type', filters.entity_type);
+    if(filters.action) q = q.eq('action', filters.action);
+    if(filters.from) q = q.gte('created_at', filters.from);
+    if(filters.to) q = q.lte('created_at', filters.to+'T23:59:59');
+    if(append && logs.length>0) q = q.lt('created_at', logs[logs.length-1].created_at);
+    return q;
+  };
+
+  const load = async (append=false) => {
+    setLoading(true);
+    const {data} = await buildQuery(append);
+    const got = data || [];
+    setHasMore(got.length > PAGE);
+    const trimmed = got.slice(0, PAGE);
+    setLogs(append ? [...logs, ...trimmed] : trimmed);
+    setLoading(false);
+  };
+
+  useEffect(() => { sb.from('users').select('id,name').order('name').then(({data})=>setUsers(data||[])); }, []);
+  useEffect(() => { load(false); /* eslint-disable-next-line */ }, [filters]);
+
+  if(currentUser.role !== "admin") return <div style={{padding:40,textAlign:"center",color:"#888"}}>⛔ Admin access only.</div>;
+
+  const actionColors = {create:"#27ae60",update:"#3498db",delete:"#e74c3c",status_change:"#8e44ad"};
+  const clearFilters = () => setFilters({user_id:"",entity_type:"",action:"",from:"",to:""});
+  const hasActiveFilters = Object.values(filters).some(v=>v);
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Audit Log</h1>
+        <div style={{fontSize:13,color:"#888"}}>{logs.length} record{logs.length!==1?"s":""}{hasMore?"+":""}</div>
+      </div>
+      <div style={{background:"#fff",borderRadius:12,padding:16,marginBottom:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr 1fr 1fr 1fr auto",gap:10,alignItems:"end"}}>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>User</label>
+            <select value={filters.user_id} onChange={e=>setFilters(p=>({...p,user_id:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,background:"#fff"}}>
+              <option value="">All users</option>
+              {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Entity</label>
+            <select value={filters.entity_type} onChange={e=>setFilters(p=>({...p,entity_type:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,background:"#fff"}}>
+              <option value="">All entities</option>
+              {AUDIT_ENTITIES.map(e=><option key={e} value={e}>{e.replace(/_/g," ")}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Action</label>
+            <select value={filters.action} onChange={e=>setFilters(p=>({...p,action:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,background:"#fff"}}>
+              <option value="">All actions</option>
+              {AUDIT_ACTIONS.map(a=><option key={a} value={a}>{a.replace(/_/g," ")}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>From</label>
+            <input type="date" value={filters.from} onChange={e=>setFilters(p=>({...p,from:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
+          </div>
+          <div>
+            <label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>To</label>
+            <input type="date" value={filters.to} onChange={e=>setFilters(p=>({...p,to:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
+          </div>
+          <button onClick={clearFilters} disabled={!hasActiveFilters} style={{padding:"7px 14px",background:hasActiveFilters?"#f0f0f0":"#fafafa",border:"none",borderRadius:6,cursor:hasActiveFilters?"pointer":"not-allowed",fontSize:12,fontWeight:600,color:hasActiveFilters?"#555":"#bbb"}}>Clear</button>
+        </div>
+      </div>
+      <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+        {loading && logs.length===0 ? <Loading/> : (
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr><TH c="When"/><TH c="User"/><TH c="Action"/><TH c="Entity"/><TH c="Target"/><TH c="Details"/></tr></thead>
+            <tbody>
+              {logs.length===0 ? <tr><td colSpan={6} style={{textAlign:"center",padding:40,color:"#aaa"}}>No audit entries match.</td></tr> :
+                logs.map((l,i)=>(
+                  <tr key={l.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
+                    <td style={{padding:"10px 14px",fontSize:12,borderBottom:"1px solid #f5f5f5",whiteSpace:"nowrap",color:"#555"}}>{fmtDate(l.created_at)}</td>
+                    <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:600}}>{l.user_name}</td>
+                    <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}>
+                      <span style={{background:`${actionColors[l.action]||"#888"}18`,color:actionColors[l.action]||"#888",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:0.5,whiteSpace:"nowrap"}}>{l.action.replace(/_/g," ")}</span>
+                    </td>
+                    <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}>
+                      <span style={{background:"#f0f0f0",color:"#555",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{l.entity_type.replace(/_/g," ")}</span>
+                    </td>
+                    <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5",color:"#333"}}>{l.entity_label||<span style={{color:"#bbb"}}>—</span>}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,borderBottom:"1px solid #f5f5f5",color:"#666",fontFamily:l.details?"monospace":"inherit"}}>{l.details||<span style={{color:"#ddd"}}>—</span>}</td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        )}
+        {hasMore && (
+          <div style={{padding:16,textAlign:"center",borderTop:"1px solid #f0f0f0"}}>
+            <button onClick={()=>load(true)} disabled={loading} style={{padding:"9px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13,opacity:loading?0.6:1}}>{loading?"Loading...":"Load more"}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ─── APP ──────────────────────────────────────────────────────────────────────
 const App = () => {
   const [user,setUser]=useState(null);
@@ -1034,7 +1281,7 @@ const App = () => {
     dashboard:<Dashboard onNav={setPage}/>,workorders:<WorkOrders/>,customers:<Customers/>,
     appointments:<Appointments/>,reminders:<RemindersPage/>,employees:<EmployeesPage/>,
     salaries:<Salaries/>,inventory:<Inventory/>,reports:<Reports/>,
-    invoices:<Invoices/>,estimates:<Estimates/>,settings:<Settings/>,
+    invoices:<Invoices/>,estimates:<Estimates/>,auditlog:<AuditLog/>,settings:<Settings/>,
   };
   return (
     <UserCtx.Provider value={user}>
