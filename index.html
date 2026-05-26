@@ -24,7 +24,7 @@ input:focus, select:focus, textarea:focus { border-color: #c0392b !important; ou
 const {createClient} = supabase;
 const sb = createClient('https://paytgvlfkqpyyxoqvaqn.supabase.co','sb_publishable_8U6IiUfM6Q9QaJ5tP0uhMQ_cN-rUNrv');
 const EQUIP_TYPES = ["Truck","Trailer","Camper","Van","Pickup","Other"];
-const WO_STATUSES = ["Waiting list","Check-in","Inspection","In progress","Waiting for parts","Done"];
+const WO_STATUSES = ["Waiting list","Check-in","Inspection","In progress","Waiting for parts","Done","Waiting on payment","Paid"];
 const {useState,useEffect,useContext,createContext} = React;
 const UserCtx = createContext(null);
 
@@ -45,7 +45,7 @@ const AUDIT_ACTIONS = ["create","update","delete","status_change"];
 const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply"];
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-const SC = {"Waiting list":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"},"Check-in":{bg:"#eafaf1",c:"#27ae60",b:"#a9dfbf"},"Inspection":{bg:"#fef9e7",c:"#d4ac0d",b:"#f9e79f"},"In progress":{bg:"#f4ecf7",c:"#8e44ad",b:"#d7bde2"},"Waiting for parts":{bg:"#fef5e7",c:"#ca6f1e",b:"#fad7a0"},"Done":{bg:"#eafaf1",c:"#1e8449",b:"#a9dfbf"},"Scheduled":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"}};
+const SC = {"Waiting list":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"},"Check-in":{bg:"#eafaf1",c:"#27ae60",b:"#a9dfbf"},"Inspection":{bg:"#fef9e7",c:"#d4ac0d",b:"#f9e79f"},"In progress":{bg:"#f4ecf7",c:"#8e44ad",b:"#d7bde2"},"Waiting for parts":{bg:"#fef5e7",c:"#ca6f1e",b:"#fad7a0"},"Done":{bg:"#eafaf1",c:"#1e8449",b:"#a9dfbf"},"Waiting on payment":{bg:"#fff4e6",c:"#e67e22",b:"#fad7a0"},"Paid":{bg:"#e8f8f5",c:"#16a085",b:"#a3e4d7"},"Scheduled":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"}};
 const Badge = ({s}) => { const x=SC[s]||{bg:"#f0f0f0",c:"#666",b:"#ddd"}; return <span style={{background:x.bg,color:x.c,border:`1px solid ${x.b}`,padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>{s}</span>; };
 const Loading = () => <div style={{padding:60,textAlign:"center",color:"#888",fontSize:14}}>⏳ Loading...</div>;
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
@@ -223,7 +223,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const user = useContext(UserCtx);
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [adding,setAdding]=useState(false);
-  const [form,setForm]=useState({type:"Truck",year:"",make:"",model:"",vin:"",license_plate:"",notes:""});
+  const [form,setForm]=useState({type:"Truck",unit_number:"",year:"",make:"",model:"",vin:"",license_plate:"",notes:""});
   const [viewEquip,setViewEquip]=useState(null);
   const [remForm,setRemForm]=useState({note:"",reminder_date:"",auto_days:""});
   const [addingRem,setAddingRem]=useState(false);
@@ -243,8 +243,8 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const save=async()=>{
     if(!form.type) return;
     const {data:inserted}=await sb.from('equipment').insert([{...form,customer_id:customerId,customer_name:customerName}]).select().single();
-    audit(user,"create","equipment",inserted?.id,`${customerName} — ${form.type} ${form.year} ${form.make} ${form.model}`.trim(),form.vin?`VIN: ${form.vin}`:"");
-    setAdding(false); setForm({type:"Truck",year:"",make:"",model:"",vin:"",license_plate:"",notes:""}); load();
+    audit(user,"create","equipment",inserted?.id,`${customerName} — ${form.type} ${form.year} ${form.make} ${form.model}`.trim(),[form.unit_number&&`Unit #${form.unit_number}`,form.vin&&`VIN: ${form.vin}`].filter(Boolean).join(", "));
+    setAdding(false); setForm({type:"Truck",unit_number:"",year:"",make:"",model:"",vin:"",license_plate:"",notes:""}); load();
   };
   const del=async(id)=>{
     if(!confirm("Delete this equipment?"))return;
@@ -324,6 +324,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
         <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:16}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <Field label="Type" value={form.type} onChange={v=>setForm(p=>({...p,type:v}))} options={EQUIP_TYPES}/>
+            <Field label="Unit Number" value={form.unit_number} onChange={v=>setForm(p=>({...p,unit_number:v}))} placeholder="e.g. 221"/>
             <Field label="Year" value={form.year} onChange={v=>setForm(p=>({...p,year:v}))} placeholder="2020"/>
             <Field label="Make" value={form.make} onChange={v=>setForm(p=>({...p,make:v}))} placeholder="Peterbilt"/>
             <Field label="Model" value={form.model} onChange={v=>setForm(p=>({...p,model:v}))} placeholder="389"/>
@@ -342,6 +343,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <div>
               <div style={{fontWeight:700,fontSize:14}}>{e.type} — {e.year} {e.make} {e.model}</div>
+              {e.unit_number&&<div style={{fontSize:12,color:"#c0392b",fontWeight:600,marginTop:2}}>Unit #: {e.unit_number}</div>}
               {e.vin&&<div style={{fontSize:12,color:"#666",marginTop:2}}>VIN: {e.vin}</div>}
               {e.license_plate&&<div style={{fontSize:12,color:"#666"}}>Plate: {e.license_plate}</div>}
               {e.notes&&<div style={{fontSize:12,color:"#888",marginTop:2}}>{e.notes}</div>}
@@ -468,7 +470,7 @@ const WorkOrders = () => {
     audit(user,"update","shop_supply",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`length: ${shopSupply.length} chars`);
   };
   const selEquip=(e)=>{
-    setForm(p=>({...p,unit_number:e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
+    setForm(p=>({...p,unit_number:e.unit_number||e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
     setEquipModal(null);
   };
 
@@ -487,7 +489,7 @@ const WorkOrders = () => {
         {WO_STATUSES.map(col=>{
           const cards=filtered.filter(w=>w.status===col);
           return (
-            <div key={col} style={{minWidth:200,flex:1,background:col==="Done"?"#f0faf4":"#f8f9fa",borderRadius:12,padding:12}}>
+            <div key={col} style={{minWidth:200,flex:1,background:col==="Done"||col==="Paid"?"#f0faf4":"#f8f9fa",borderRadius:12,padding:12}}>
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}><Badge s={col}/><span style={{fontSize:12,color:"#888"}}>{cards.length}</span></div>
               {cards.length===0?<div style={{textAlign:"center",color:"#ccc",fontSize:13,padding:"20px 0"}}>Empty</div>
               :cards.map(w=>(
@@ -496,7 +498,7 @@ const WorkOrders = () => {
                     <span style={{fontWeight:700,fontSize:12,color:"#c0392b"}}>{w.id}</span>
                     <div style={{display:"flex",gap:4}}>
                       <button onClick={()=>openJobs(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13}} title="Jobs & Notes">📝</button>
-                      <button onClick={()=>del(w.id)} style={{background:"none",border:"none",cursor:"pointer",color:"#ddd",fontSize:13}}>🗑</button>
+                      <button onClick={()=>del(w.id)} style={{background:"#fdecea",border:"none",borderRadius:6,padding:"2px 6px",cursor:"pointer",color:"#c0392b",fontSize:13}} title="Delete WO">🗑</button>
                     </div>
                   </div>
                   <div style={{fontWeight:600,fontSize:13,marginBottom:2}}>{w.customer}</div>
@@ -776,15 +778,25 @@ const Customers = () => {
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
   const [equipTarget,setEquipTarget]=useState(null);
-  const [form,setForm]=useState({name:"",address:"",phone:"",email:"",notes:""});
+  const [editId,setEditId]=useState(null);
+  const EMPTY={name:"",address:"",phone:"",email:"",notes:""};
+  const [form,setForm]=useState(EMPTY);
   const load=async()=>{const{data}=await sb.from('customers').select('*').order('created_at',{ascending:false});setList(data||[]);setLoading(false);};
   useEffect(()=>{load();},[]);
   const filtered=list.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.email.toLowerCase().includes(search.toLowerCase()));
-  const add=async()=>{
+  const openAdd=()=>{setForm(EMPTY);setEditId(null);setModal(true);};
+  const openEdit=(c)=>{setForm({name:c.name||"",address:c.address||"",phone:c.phone||"",email:c.email||"",notes:c.notes||""});setEditId(c.id);setModal(true);};
+  const closeModal=()=>{setModal(false);setEditId(null);setForm(EMPTY);};
+  const save=async()=>{
     if(!form.name)return;
-    const {data:inserted}=await sb.from('customers').insert([form]).select().single();
-    audit(user,"create","customer",inserted?.id,form.name);
-    setModal(false);setForm({name:"",address:"",phone:"",email:"",notes:""});load();
+    if(editId){
+      await sb.from('customers').update(form).eq('id',editId);
+      audit(user,"update","customer",editId,form.name);
+    }else{
+      const {data:inserted}=await sb.from('customers').insert([form]).select().single();
+      audit(user,"create","customer",inserted?.id,form.name);
+    }
+    closeModal();load();
   };
   const del=async(id)=>{
     if(!confirm("Delete customer?"))return;
@@ -798,7 +810,7 @@ const Customers = () => {
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
         <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Customers</h1>
-        <Btn label="Add new customer" onClick={()=>setModal(true)} color="#c0392b"/>
+        <Btn label="Add new customer" onClick={openAdd} color="#c0392b"/>
       </div>
       <div style={{background:"#fff",borderRadius:12,padding:24,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
@@ -816,6 +828,7 @@ const Customers = () => {
               </div>
               <div style={{display:"flex",gap:8,marginLeft:16,flexWrap:"wrap",justifyContent:"flex-end"}}>
                 <button onClick={()=>setEquipTarget(c)} style={{padding:"8px 14px",background:"#3498db",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>🚛 Equipment</button>
+                <button onClick={()=>openEdit(c)} style={{padding:"8px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>✏️ Edit</button>
                 <button onClick={()=>del(c.id)} style={{padding:"8px 12px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer"}}>🗑</button>
               </div>
             </div>
@@ -824,7 +837,7 @@ const Customers = () => {
         {filtered.length===0&&<p style={{color:"#aaa",textAlign:"center",padding:30}}>No customers yet.</p>}
       </div>
       {modal&&(
-        <Modal title="Add Customer" onClose={()=>setModal(false)}>
+        <Modal title={editId?"Edit Customer":"Add Customer"} onClose={closeModal}>
           <Field label="Company Name" value={form.name} onChange={v=>setForm(p=>({...p,name:v}))} required/>
           <Field label="Address" value={form.address} onChange={v=>setForm(p=>({...p,address:v}))}/>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -833,8 +846,8 @@ const Customers = () => {
           </div>
           <Field label="Notes" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} type="textarea"/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
-            <button onClick={()=>setModal(false)} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-            <button onClick={add} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Add</button>
+            <button onClick={closeModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
+            <button onClick={save} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Add"}</button>
           </div>
         </Modal>
       )}
