@@ -84,7 +84,7 @@ const Login = ({onLogin}) => {
     setLoading(true); setErr("");
     const {data,error} = await sb.from('users').select('*').eq('email',email).eq('password',pass).eq('active',true).single();
     setLoading(false);
-    if(data) onLogin(data); else setErr("Email sau parola gresita.");
+    if(data) onLogin(data); else setErr("Incorrect email or password.");
   };
   return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -398,32 +398,29 @@ const WorkOrders = () => {
   useEffect(()=>{loadWos();loadCustomers();},[]);
 
   const filtered=wos.filter(w=>w.id.toLowerCase().includes(search.toLowerCase())||w.customer.toLowerCase().includes(search.toLowerCase())||w.unit_number.toLowerCase().includes(search.toLowerCase()));
+  // Suggested next WO number from highest existing (user can override the field).
+  const nextWoId=()=>{
+    const max=wos.reduce((m,w)=>{const n=parseInt(String(w.id).replace(/\D/g,""),10);return isNaN(n)?m:Math.max(m,n);},0);
+    return `WO-${String(max+1).padStart(3,"0")}`;
+  };
   const add=async()=>{
-    if(!form.customer||!form.unit_number) return;
-    // Next WO number = highest existing number + 1. Query fresh because count+1
-    // collides with surviving IDs after any WO is deleted (and goes stale across users).
-    const {data:existing}=await sb.from('work_orders').select('id');
-    let num=(existing||[]).reduce((m,w)=>{const n=parseInt(String(w.id).replace(/\D/g,""),10);return isNaN(n)?m:Math.max(m,n);},0)+1;
-    let inserted=null,error=null;
-    for(let attempt=0;attempt<5;attempt++){
-      const id=`WO-${String(num).padStart(3,"0")}`;
-      const res=await sb.from('work_orders').insert([{...form,id,labor:Number(form.labor),parts:Number(form.parts)}]).select().single();
-      if(!res.error){inserted=res.data;break;}
-      error=res.error;
-      if(res.error.code==="23505"){num++;continue;} // ID taken (concurrent add) → try next number
-      break;
-    }
-    if(!inserted){alert("Could not create work order: "+(error?.message||"unknown error"));return;}
-    audit(user,"create","work_order",inserted.id,`${inserted.id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
+    const id=(form.id||"").trim();
+    if(!form.customer||!form.unit_number||!id) return;
+    const res=await sb.from('work_orders').insert([{...form,id,labor:Number(form.labor),parts:Number(form.parts)}]).select().single();
+    if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not create work order: "+res.error.message);return;}
+    audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
   };
-  const openAdd=()=>{setForm(empty);setEditId(null);setModal(true);};
-  const openEdit=(w)=>{setForm({customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||new Date().toISOString().split("T")[0],is_road_call:!!w.is_road_call});setEditId(w.id);setModal(true);};
+  const openAdd=()=>{setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
+  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||new Date().toISOString().split("T")[0],is_road_call:!!w.is_road_call});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);};
   const saveEdit=async()=>{
-    if(!form.customer||!form.unit_number) return;
-    await sb.from('work_orders').update({customer:form.customer,unit_number:form.unit_number,vin:form.vin,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call}).eq('id',editId);
-    audit(user,"update","work_order",editId,`${editId} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
+    const id=(form.id||"").trim();
+    if(!form.customer||!form.unit_number||!id) return;
+    // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
+    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call}).eq('id',editId).select().single();
+    if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
+    audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[id!==editId&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
   };
   const addCustomer=async()=>{
@@ -550,6 +547,7 @@ const WorkOrders = () => {
 
       {modal&&(
         <Modal title={editId?`Edit Work Order — ${editId}`:"New Work Order"} onClose={closeWoModal}>
+          <Field label="WO Number" value={form.id} onChange={v=>setForm(p=>({...p,id:v}))} required placeholder="e.g. WO-1042"/>
           <div style={{marginBottom:14}}>
             <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Customer <span style={{color:"#c0392b"}}>*</span></label>
             <div style={{display:"flex",gap:8}}>
