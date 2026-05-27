@@ -42,7 +42,27 @@ const audit = (user, action, entity_type, entity_id, entity_label, details = "")
   }]).then(r => { if (r.error) console.error('audit:', r.error); });
 };
 const AUDIT_ACTIONS = ["create","update","delete","status_change"];
-const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply"];
+const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply","dot_inspection"];
+
+// ─── DOT ANNUAL INSPECTION ────────────────────────────────────────────────────
+const SHOP = {name:"Lincoln Truck & Trailer Repair", address:"5940 Colfax Avenue, Lincoln, Nebraska"};
+const DOT_COMPONENTS = [
+  {key:"brake_system",label:"Brake System"},
+  {key:"coupling_devices",label:"Coupling Devices"},
+  {key:"exhaust_system",label:"Exhaust System"},
+  {key:"fuel_system",label:"Fuel System"},
+  {key:"lighting_devices",label:"Lighting Devices"},
+  {key:"safe_loading",label:"Safe Loading"},
+  {key:"steering_mechanism",label:"Steering Mechanism"},
+  {key:"suspension",label:"Suspension"},
+  {key:"frame",label:"Frame"},
+  {key:"tires",label:"Tires"},
+  {key:"wheels_rims",label:"Wheels & Rims"},
+  {key:"windshield_glazing",label:"Windshield Glazing"},
+  {key:"windshield_wipers",label:"Windshield Wipers"},
+  {key:"rear_impact_guard",label:"Rear Impact Guard"}
+];
+const DOT_STATUSES = ["","OK","Needs repair","N/A"];
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const SC = {"Waiting list":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"},"Check-in":{bg:"#eafaf1",c:"#27ae60",b:"#a9dfbf"},"Inspection":{bg:"#fef9e7",c:"#d4ac0d",b:"#f9e79f"},"In progress":{bg:"#f4ecf7",c:"#8e44ad",b:"#d7bde2"},"Waiting for parts":{bg:"#fef5e7",c:"#ca6f1e",b:"#fad7a0"},"Done":{bg:"#eafaf1",c:"#1e8449",b:"#a9dfbf"},"Waiting on payment":{bg:"#fff4e6",c:"#e67e22",b:"#fad7a0"},"Paid":{bg:"#e8f8f5",c:"#16a085",b:"#a3e4d7"},"Scheduled":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"}};
@@ -380,6 +400,7 @@ const WorkOrders = () => {
   const [addingPart,setAddingPart]=useState(false);
   const [partForm,setPartForm]=useState({name:"",description:"",part_number:"",quantity:1,status:"Pending Order",eta_delivery:""});
   const [shopSupply,setShopSupply]=useState("");
+  const [dot,setDot]=useState(null);
   const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:new Date().toISOString().split("T")[0],is_road_call:false};
   const [form,setForm]=useState(empty);
   const [editId,setEditId]=useState(null);
@@ -467,7 +488,66 @@ const WorkOrders = () => {
   };
   const loadJobs=async(woId)=>{const{data}=await sb.from('jobs').select('*').eq('work_order_id',woId).order('created_at');setJobsList(data||[]);};
   const loadParts=async(woId)=>{const{data}=await sb.from('parts').select('*').eq('work_order_id',woId).order('created_at');setPartsList(data||[]);};
-  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");await loadJobs(wo.id);await loadNotes(wo.id);await loadParts(wo.id);};
+  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");await loadJobs(wo.id);await loadNotes(wo.id);await loadParts(wo.id);await loadDot(wo);};
+  const blankDot=(wo)=>{
+    const cust=customers.find(c=>c.name===wo.customer);
+    return {carrier_operator:wo.customer||"",carrier_address:cust?.address||"",inspector:user.name||"",inspection_date:new Date().toISOString().split("T")[0],vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",odometer:"",overall_result:"",inspector_qualified:false,components:{}};
+  };
+  const loadDot=async(wo)=>{
+    const{data}=await sb.from('dot_inspections').select('*').eq('work_order_id',wo.id).maybeSingle();
+    setDot(data?{...data,components:data.components||{}}:blankDot(wo));
+  };
+  const setDotField=(k,v)=>setDot(p=>({...p,[k]:v}));
+  const setDotComp=(key,field,v)=>setDot(p=>({...p,components:{...p.components,[key]:{...(p.components[key]||{status:"",note:""}),[field]:v}}}));
+  const saveDot=async()=>{
+    const payload={work_order_id:jobsModal.id,carrier_operator:dot.carrier_operator,carrier_address:dot.carrier_address,inspector:dot.inspector,inspection_date:dot.inspection_date||null,vehicle_make:dot.vehicle_make,vehicle_type:dot.vehicle_type,vin:dot.vin,unit_number:dot.unit_number,license_plate:dot.license_plate,odometer:dot.odometer,overall_result:dot.overall_result,inspector_qualified:dot.inspector_qualified,components:dot.components,created_by:user.name,updated_at:new Date().toISOString()};
+    const res=await sb.from('dot_inspections').upsert(payload,{onConflict:'work_order_id'}).select().single();
+    if(res.error){alert("Could not save inspection: "+res.error.message);return;}
+    setDot({...res.data,components:res.data.components||{}});
+    audit(user,"update","dot_inspection",jobsModal.id,`${jobsModal.id} — ${dot.carrier_operator}`,`result: ${dot.overall_result||"—"}`);
+    alert("DOT inspection saved.");
+  };
+  const printDot=()=>{
+    const esc=s=>String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const rows=DOT_COMPONENTS.map(c=>{const cv=dot.components[c.key]||{};const mark=cv.status==="OK"?"☑ OK":cv.status==="Needs repair"?"☒ Needs repair":cv.status==="N/A"?"N/A":"—";return `<tr><td>${esc(c.label)}</td><td style="text-align:center;white-space:nowrap">${esc(mark)}</td><td>${esc(cv.note)}</td></tr>`;}).join("");
+    const html=`<!DOCTYPE html><html><head><title>DOT Annual Inspection — ${esc(jobsModal.id)}</title><style>
+      body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:32px;font-size:13px}
+      h1{font-size:18px;margin:0} .sub{color:#444;margin:2px 0 16px}
+      .hd{border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:14px}
+      table{width:100%;border-collapse:collapse;margin:10px 0}
+      th,td{border:1px solid #999;padding:6px 8px;font-size:12px;text-align:left;vertical-align:top}
+      th{background:#eee}
+      .grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;margin-bottom:8px}
+      .f{padding:3px 0} .f b{display:inline-block;min-width:140px}
+      .result{font-size:15px;font-weight:bold;margin:12px 0}
+      .sig{margin-top:30px;display:flex;justify-content:space-between}
+      .line{border-top:1px solid #000;width:45%;padding-top:4px;font-size:11px}
+      @media print{body{margin:12mm}}
+    </style></head><body>
+      <div class="hd"><h1>${esc(SHOP.name)}</h1><div class="sub">${esc(SHOP.address)}</div>
+      <div style="font-weight:bold;font-size:15px">Annual Vehicle Inspection Report (49 CFR 396, App. A)</div></div>
+      <div class="grid">
+        <div class="f"><b>Motor carrier operator:</b> ${esc(dot.carrier_operator)}</div>
+        <div class="f"><b>Inspection date:</b> ${esc(dot.inspection_date)}</div>
+        <div class="f"><b>Address:</b> ${esc(dot.carrier_address)}</div>
+        <div class="f"><b>Work order:</b> ${esc(jobsModal.id)}</div>
+        <div class="f"><b>Inspector:</b> ${esc(dot.inspector)}</div>
+        <div class="f"><b>Unit / fleet #:</b> ${esc(dot.unit_number)}</div>
+        <div class="f"><b>VIN:</b> ${esc(dot.vin)}</div>
+        <div class="f"><b>Make:</b> ${esc(dot.vehicle_make)}</div>
+        <div class="f"><b>Vehicle type:</b> ${esc(dot.vehicle_type)}</div>
+        <div class="f"><b>License plate:</b> ${esc(dot.license_plate)}</div>
+        <div class="f"><b>Odometer:</b> ${esc(dot.odometer)}</div>
+      </div>
+      <table><thead><tr><th style="width:32%">Component inspected</th><th style="width:18%">Result</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="result">Inspection result: ${esc(dot.overall_result||"—")}</div>
+      <div>${dot.inspector_qualified?"☑":"☐"} The undersigned certifies that the inspector is qualified per 49 CFR 396.19.</div>
+      <div class="sig"><div class="line">Inspector signature</div><div class="line">Date</div></div>
+    </body></html>`;
+    const w=window.open("","_blank");
+    if(!w){alert("Pop-up blocked — allow pop-ups to print.");return;}
+    w.document.write(html);w.document.close();w.focus();setTimeout(()=>w.print(),250);
+  };
   const addJob=async(name)=>{
     if(!name.trim()) return;
     const {data:inserted}=await sb.from('jobs').insert([{work_order_id:jobsModal.id,name:name.trim(),status:"Pending",created_by:user.name}]).select().single();
@@ -624,6 +704,7 @@ const WorkOrders = () => {
             <button className={`tab-btn${jobTab==="parts"?" active":""}`} onClick={()=>setJobTab("parts")}>🔩 Parts ({partsList.length})</button>
             <button className={`tab-btn${jobTab==="supply"?" active":""}`} onClick={()=>setJobTab("supply")}>🧴 Shop Supply</button>
             <button className={`tab-btn${jobTab==="notes"?" active":""}`} onClick={()=>{setJobTab("notes");loadNotes(jobsModal.id);}}>📝 Notes ({notesList.length})</button>
+            <button className={`tab-btn${jobTab==="dot"?" active":""}`} onClick={()=>setJobTab("dot")}>🛡️ DOT Inspection</button>
           </div>
           {jobTab==="jobs"&&(
             <div>
@@ -794,6 +875,55 @@ const WorkOrders = () => {
                     setNoteText("");loadNotes(jobsModal.id);
                   });
                 }} style={{padding:"9px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add Note</button>
+              </div>
+            </div>
+          )}
+          {jobTab==="dot"&&dot&&(
+            <div>
+              <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:16}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:10}}>Inspection details</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                  <Field label="Motor carrier operator" value={dot.carrier_operator} onChange={v=>setDotField("carrier_operator",v)}/>
+                  <Field label="Inspection date" value={dot.inspection_date||""} onChange={v=>setDotField("inspection_date",v)} type="date"/>
+                  <Field label="Address" value={dot.carrier_address} onChange={v=>setDotField("carrier_address",v)}/>
+                  <Field label="Inspector" value={dot.inspector} onChange={v=>setDotField("inspector",v)}/>
+                  <Field label="VIN" value={dot.vin} onChange={v=>setDotField("vin",v)}/>
+                  <Field label="Unit / fleet #" value={dot.unit_number} onChange={v=>setDotField("unit_number",v)}/>
+                  <Field label="Make" value={dot.vehicle_make} onChange={v=>setDotField("vehicle_make",v)} placeholder="Peterbilt"/>
+                  <Field label="Vehicle type" value={dot.vehicle_type} onChange={v=>setDotField("vehicle_type",v)} options={["","Truck","Trailer","Tractor","Bus","Other"]}/>
+                  <Field label="License plate" value={dot.license_plate} onChange={v=>setDotField("license_plate",v)}/>
+                  <Field label="Odometer" value={dot.odometer} onChange={v=>setDotField("odometer",v)}/>
+                </div>
+              </div>
+              <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:8}}>Components inspected (FMCSA Appendix A)</div>
+              {DOT_COMPONENTS.map(c=>{
+                const cv=dot.components[c.key]||{status:"",note:""};
+                const sc=cv.status==="OK"?"#27ae60":cv.status==="Needs repair"?"#c0392b":"#888";
+                return (
+                  <div key={c.key} style={{display:"grid",gridTemplateColumns:"180px 150px 1fr",gap:10,alignItems:"center",padding:"6px 0",borderBottom:"1px solid #f2f2f2"}}>
+                    <div style={{fontSize:13,fontWeight:600}}>{c.label}</div>
+                    <select value={cv.status} onChange={e=>setDotComp(c.key,"status",e.target.value)} style={{padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13,color:sc,fontWeight:600,background:"#fff"}}>
+                      {DOT_STATUSES.map(s=><option key={s} value={s}>{s||"—"}</option>)}
+                    </select>
+                    <input value={cv.note||""} onChange={e=>setDotComp(c.key,"note",e.target.value)} placeholder="Notes..." style={{padding:"6px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
+                  </div>
+                );
+              })}
+              <div style={{display:"flex",alignItems:"center",gap:20,marginTop:16,flexWrap:"wrap"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:13,fontWeight:600,color:"#555"}}>Overall result:</span>
+                  <select value={dot.overall_result} onChange={e=>setDotField("overall_result",e.target.value)} style={{padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,fontWeight:700,background:"#fff",color:dot.overall_result==="Pass"?"#27ae60":dot.overall_result==="Fail"?"#c0392b":"#555"}}>
+                    {["","Pass","Fail"].map(s=><option key={s} value={s}>{s||"—"}</option>)}
+                  </select>
+                </div>
+                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:"#555"}}>
+                  <input type="checkbox" checked={!!dot.inspector_qualified} onChange={e=>setDotField("inspector_qualified",e.target.checked)} style={{width:16,height:16,accentColor:"#c0392b"}}/>
+                  Inspector qualified per 49 CFR 396.19
+                </label>
+              </div>
+              <div style={{display:"flex",gap:10,marginTop:16}}>
+                <button onClick={saveDot} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>💾 Save Inspection</button>
+                <button onClick={printDot} style={{padding:"10px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>🖨 Print</button>
               </div>
             </div>
           )}
