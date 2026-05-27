@@ -383,6 +383,8 @@ const WorkOrders = () => {
   const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:new Date().toISOString().split("T")[0],is_road_call:false};
   const [form,setForm]=useState(empty);
   const [editId,setEditId]=useState(null);
+  const [woErr,setWoErr]=useState("");
+  const [mechanics,setMechanics]=useState([]);
 
   const loadWos=async()=>{
     const [wr,jr]=await Promise.all([
@@ -394,8 +396,9 @@ const WorkOrders = () => {
     setJobLabor(map); setWos(wr.data||[]); setLoading(false);
   };
   const loadCustomers=async()=>{const{data}=await sb.from('customers').select('*').order('name',{ascending:true});setCustomers(data||[]);};
+  const loadMechanics=async()=>{const{data}=await sb.from('users').select('name').eq('active',true).order('name',{ascending:true});setMechanics((data||[]).map(u=>u.name));};
   const loadNotes=async(woId)=>{const{data}=await sb.from('notes').select('*').eq('work_order_id',woId).order('created_at',{ascending:true});setNotesList(data||[]);};
-  useEffect(()=>{loadWos();loadCustomers();},[]);
+  useEffect(()=>{loadWos();loadCustomers();loadMechanics();},[]);
 
   const filtered=wos.filter(w=>w.id.toLowerCase().includes(search.toLowerCase())||w.customer.toLowerCase().includes(search.toLowerCase())||w.unit_number.toLowerCase().includes(search.toLowerCase()));
   // Suggested next WO number from highest existing (user can override the field).
@@ -403,9 +406,19 @@ const WorkOrders = () => {
     const max=wos.reduce((m,w)=>{const n=parseInt(String(w.id).replace(/\D/g,""),10);return isNaN(n)?m:Math.max(m,n);},0);
     return `WO-${String(max+1).padStart(3,"0")}`;
   };
+  const woValid=(id)=>{
+    const missing=[];
+    if(!id) missing.push("WO Number");
+    if(!form.customer) missing.push("Customer");
+    if(!(form.unit_number||"").trim()) missing.push("Equipment / Unit");
+    if(!(form.vin||"").trim()) missing.push("VIN");
+    if(!form.mechanic) missing.push("Mechanic");
+    if(missing.length){setWoErr("Please fill in required field(s): "+missing.join(", "));return false;}
+    setWoErr("");return true;
+  };
   const add=async()=>{
     const id=(form.id||"").trim();
-    if(!form.customer||!form.unit_number||!id) return;
+    if(!woValid(id)) return;
     const res=await sb.from('work_orders').insert([{...form,id,labor:Number(form.labor),parts:Number(form.parts)}]).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not create work order: "+res.error.message);return;}
     audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
@@ -413,10 +426,10 @@ const WorkOrders = () => {
   };
   const openAdd=()=>{setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
   const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||new Date().toISOString().split("T")[0],is_road_call:!!w.is_road_call});setEditId(w.id);setModal(true);};
-  const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);};
+  const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
   const saveEdit=async()=>{
     const id=(form.id||"").trim();
-    if(!form.customer||!form.unit_number||!id) return;
+    if(!woValid(id)) return;
     // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
     const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call}).eq('id',editId).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
@@ -547,6 +560,7 @@ const WorkOrders = () => {
 
       {modal&&(
         <Modal title={editId?`Edit Work Order — ${editId}`:"New Work Order"} onClose={closeWoModal}>
+          {woErr&&<div style={{background:"#fdecea",color:"#c0392b",padding:"10px 14px",borderRadius:8,fontSize:13,marginBottom:14,fontWeight:600}}>⚠️ {woErr}</div>}
           <Field label="WO Number" value={form.id} onChange={v=>setForm(p=>({...p,id:v}))} required placeholder="e.g. WO-1042"/>
           <div style={{marginBottom:14}}>
             <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Customer <span style={{color:"#c0392b"}}>*</span></label>
@@ -566,8 +580,8 @@ const WorkOrders = () => {
             </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <Field label="VIN" value={form.vin} onChange={v=>setForm(p=>({...p,vin:v}))}/>
-            <Field label="Mechanic" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...(customers.length?["John Smith","Mike Doe","Catalin Chinces"]:[])]}/>
+            <Field label="VIN" value={form.vin} onChange={v=>setForm(p=>({...p,vin:v}))} required/>
+            <Field label="Mechanic" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...mechanics]} required/>
             <Field label="Status" value={form.status} onChange={v=>setForm(p=>({...p,status:v}))} options={WO_STATUSES}/>
             <Field label="Date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))} type="date"/>
             <Field label="Labor ($)" value={form.labor} onChange={v=>setForm(p=>({...p,labor:v}))} type="number"/>
