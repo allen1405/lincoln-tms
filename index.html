@@ -98,7 +98,7 @@ const Login = ({onLogin}) => {
         <Field label="Email" value={email} onChange={setEmail} type="email" required/>
         <Field label="Password" value={pass} onChange={setPass} type="password" required/>
         <button onClick={go} disabled={loading} style={{width:"100%",padding:13,background:"linear-gradient(135deg,#c0392b,#e74c3c)",color:"#fff",border:"none",borderRadius:10,fontSize:15,fontWeight:700,cursor:"pointer",marginTop:8,opacity:loading?0.7:1}}>
-          {loading?"Se verifica...":"Intra in sistem"}
+          {loading?"Logging in...":"Login"}
         </button>
       </div>
     </div>
