@@ -364,6 +364,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
 const WorkOrders = () => {
   const user = useContext(UserCtx);
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
+  const [jobLabor,setJobLabor]=useState({}); // work_order_id → summed job labor hours (real labor; w.labor column is unused here)
   const [customers,setCustomers]=useState([]);
   const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
   const [newCustModal,setNewCustModal]=useState(false);
@@ -382,7 +383,15 @@ const WorkOrders = () => {
   const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:new Date().toISOString().split("T")[0]};
   const [form,setForm]=useState(empty);
 
-  const loadWos=async()=>{const{data}=await sb.from('work_orders').select('*').order('created_at',{ascending:false});setWos(data||[]);setLoading(false);};
+  const loadWos=async()=>{
+    const [wr,jr]=await Promise.all([
+      sb.from('work_orders').select('*').order('created_at',{ascending:false}),
+      sb.from('jobs').select('work_order_id,labor')
+    ]);
+    const map={};
+    (jr.data||[]).forEach(j=>{map[j.work_order_id]=(map[j.work_order_id]||0)+Number(j.labor||0);});
+    setJobLabor(map); setWos(wr.data||[]); setLoading(false);
+  };
   const loadCustomers=async()=>{const{data}=await sb.from('customers').select('*').order('name',{ascending:true});setCustomers(data||[]);};
   const loadNotes=async(woId)=>{const{data}=await sb.from('notes').select('*').eq('work_order_id',woId).order('created_at',{ascending:true});setNotesList(data||[]);};
   useEffect(()=>{loadWos();loadCustomers();},[]);
@@ -517,7 +526,7 @@ const WorkOrders = () => {
                   <div style={{fontSize:12,color:"#666",marginBottom:2}}>🚛 {w.unit_number}</div>
                   <div style={{fontSize:11,color:"#888",marginBottom:4}}>{w.description}</div>
                   <div style={{fontSize:11,color:"#aaa",marginBottom:4}}>👨‍🔧 {w.mechanic||"Unassigned"}</div>
-                  <div style={{fontSize:11,fontWeight:600,color:"#27ae60",marginBottom:6}}>Labor: {w.labor}h · Parts: ${w.parts}</div>
+                  <div style={{fontSize:11,fontWeight:600,color:"#27ae60",marginBottom:6}}>Labor: {jobLabor[w.id]||0}h · Parts: ${w.parts}</div>
                   <select value={w.status} onChange={e=>upd(w.id,e.target.value)} style={{width:"100%",padding:"4px 8px",border:"1px solid #eee",borderRadius:6,fontSize:11,cursor:"pointer"}}>
                     {WO_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
                   </select>
@@ -582,7 +591,7 @@ const WorkOrders = () => {
       {equipModal&&<EquipmentModal customerId={equipModal.id} customerName={equipModal.name} onClose={()=>setEquipModal(null)} onSelect={selEquip}/>}
 
       {jobsModal&&(
-        <Modal title={`${jobsModal.id} — ${jobsModal.customer} (${jobsModal.unit_number})`} onClose={()=>{setJobsModal(null);setNoteText("");}} wide>
+        <Modal title={`${jobsModal.id} — ${jobsModal.customer} (${jobsModal.unit_number})`} onClose={()=>{setJobsModal(null);setNoteText("");loadWos();}} wide>
           <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20}}>
             <button className={`tab-btn${jobTab==="jobs"?" active":""}`} onClick={()=>setJobTab("jobs")}>🔧 Jobs ({jobsList.length}) · {jobsList.reduce((s,j)=>s+Number(j.labor||0),0)}h</button>
             <button className={`tab-btn${jobTab==="parts"?" active":""}`} onClick={()=>setJobTab("parts")}>🔩 Parts ({partsList.length})</button>
