@@ -616,9 +616,9 @@ const WorkOrders = () => {
               :cards.map(w=>(
                 <div key={w.id} style={{background:"#fff",borderRadius:10,padding:12,marginBottom:8,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}}>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                    <span onClick={()=>openEdit(w)} style={{fontWeight:700,fontSize:12,color:"#c0392b",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted"}} title="Click to edit work order">{w.id}</span>
+                    <span onClick={()=>openJobs(w)} style={{fontWeight:700,fontSize:12,color:"#c0392b",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted"}} title="Click to open details (jobs, parts, notes, DOT)">{w.id}</span>
                     <div style={{display:"flex",gap:4}}>
-                      <button onClick={()=>openJobs(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13}} title="Jobs & Notes">📝</button>
+                      <button onClick={()=>openEdit(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13}} title="Edit work order">✏️</button>
                       <button onClick={()=>del(w.id)} style={{background:"#fdecea",border:"none",borderRadius:6,padding:"2px 6px",cursor:"pointer",color:"#c0392b",fontSize:13}} title="Delete WO">🗑</button>
                     </div>
                   </div>
