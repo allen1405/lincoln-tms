@@ -401,7 +401,7 @@ const WorkOrders = () => {
   const [partForm,setPartForm]=useState({name:"",description:"",part_number:"",quantity:1,status:"Pending Order",eta_delivery:""});
   const [shopSupply,setShopSupply]=useState("");
   const [dot,setDot]=useState(null);
-  const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:new Date().toISOString().split("T")[0],is_road_call:false};
+  const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:new Date().toISOString().split("T")[0],is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [editId,setEditId]=useState(null);
   const [woErr,setWoErr]=useState("");
@@ -427,6 +427,7 @@ const WorkOrders = () => {
     const max=wos.reduce((m,w)=>{const n=parseInt(String(w.id).replace(/\D/g,""),10);return isNaN(n)?m:Math.max(m,n);},0);
     return `WO-${String(max+1).padStart(3,"0")}`;
   };
+  const numOrNull=v=>(v===""||v==null)?null:Number(v);
   const woValid=(id)=>{
     const missing=[];
     if(!id) missing.push("WO Number");
@@ -440,19 +441,19 @@ const WorkOrders = () => {
   const add=async()=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
-    const res=await sb.from('work_orders').insert([{...form,id,labor:Number(form.labor),parts:Number(form.parts)}]).select().single();
+    const res=await sb.from('work_orders').insert([{...form,id,labor:Number(form.labor),parts:Number(form.parts),truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}]).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not create work order: "+res.error.message);return;}
     audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
   };
   const openAdd=()=>{setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
-  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||new Date().toISOString().split("T")[0],is_road_call:!!w.is_road_call});setEditId(w.id);setModal(true);};
+  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||new Date().toISOString().split("T")[0],is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
   const saveEdit=async()=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
     // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
-    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call}).eq('id',editId).select().single();
+    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
     audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[id!==editId&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
@@ -666,6 +667,14 @@ const WorkOrders = () => {
             <Field label="Date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))} type="date"/>
             <Field label="Labor ($)" value={form.labor} onChange={v=>setForm(p=>({...p,labor:v}))} type="number"/>
             <Field label="Parts ($)" value={form.parts} onChange={v=>setForm(p=>({...p,parts:v}))} type="number"/>
+          </div>
+          <div style={{fontSize:12,fontWeight:700,color:"#888",textTransform:"uppercase",letterSpacing:0.5,margin:"14px 0 8px"}}>Vehicle readings <span style={{textTransform:"none",fontWeight:400,color:"#aaa"}}>(leave blank if N/A)</span></div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Field label="Truck mileage" value={form.truck_mileage} onChange={v=>setForm(p=>({...p,truck_mileage:v}))} type="number" placeholder="e.g. 234567"/>
+            <Field label="APU hours (total)" value={form.apu_hours} onChange={v=>setForm(p=>({...p,apu_hours:v}))} type="number" placeholder="e.g. 8523"/>
+            <Field label="APU hours since last oil change" value={form.apu_hours_since_oil} onChange={v=>setForm(p=>({...p,apu_hours_since_oil:v}))} type="number"/>
+            <Field label="Reefer hours (total)" value={form.reefer_hours} onChange={v=>setForm(p=>({...p,reefer_hours:v}))} type="number"/>
+            <Field label="Reefer hours since last oil change" value={form.reefer_hours_since_oil} onChange={v=>setForm(p=>({...p,reefer_hours_since_oil:v}))} type="number"/>
           </div>
           <Field label="Description" value={form.description} onChange={v=>setForm(p=>({...p,description:v}))} type="textarea"/>
           <label style={{display:"flex",alignItems:"center",gap:8,margin:"4px 0 8px",cursor:"pointer",fontSize:14,fontWeight:600,color:"#555"}}>
