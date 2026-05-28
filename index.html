@@ -46,22 +46,95 @@ const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","pa
 
 // ─── DOT ANNUAL INSPECTION ────────────────────────────────────────────────────
 const SHOP = {name:"Lincoln Truck & Trailer Repair", address:"5940 Colfax Avenue, Lincoln, Nebraska"};
-const DOT_COMPONENTS = [
-  {key:"brake_system",label:"Brake System"},
-  {key:"coupling_devices",label:"Coupling Devices"},
-  {key:"exhaust_system",label:"Exhaust System"},
-  {key:"fuel_system",label:"Fuel System"},
-  {key:"lighting_devices",label:"Lighting Devices"},
-  {key:"safe_loading",label:"Safe Loading"},
-  {key:"steering_mechanism",label:"Steering Mechanism"},
-  {key:"suspension",label:"Suspension"},
-  {key:"frame",label:"Frame"},
-  {key:"tires",label:"Tires"},
-  {key:"wheels_rims",label:"Wheels & Rims"},
-  {key:"windshield_glazing",label:"Windshield Glazing"},
-  {key:"windshield_wipers",label:"Windshield Wipers"},
-  {key:"rear_impact_guard",label:"Rear Impact Guard"}
+const DOT_SECTIONS = [
+  {num:1,title:"Brake System",items:[
+    {key:"brake_service_brakes",label:"Service Brakes"},
+    {key:"brake_parking_brake_system",label:"Parking Brake System"},
+    {key:"brake_drums_or_rotors",label:"Brake Drums or Rotors"},
+    {key:"brake_hoses",label:"Brake Hoses"},
+    {key:"brake_tubing",label:"Brake Tubing"},
+    {key:"brake_low_pressure_warning",label:"Low Pressure Warning Device"},
+    {key:"brake_tractor_protection_valve",label:"Tractor Protection Valve"},
+    {key:"brake_air_compressor",label:"Air Compressor"},
+    {key:"brake_electric_brakes",label:"Electric Brakes"},
+    {key:"brake_hydraulic_brakes",label:"Hydraulic Brakes"},
+    {key:"brake_vacuum_systems",label:"Vacuum Systems"},
+    {key:"brake_antilock_brake_system",label:"Antilock Brake System"},
+    {key:"brake_automatic_brake_adjusters",label:"Automatic Brake Adjusters"}
+  ]},
+  {num:2,title:"Coupling Devices",items:[
+    {key:"coupling_fifth_wheels",label:"Fifth Wheels"},
+    {key:"coupling_pintle_hooks",label:"Pintle Hooks"},
+    {key:"coupling_drawbar_eye",label:"Drawbar/Towbar Eye"},
+    {key:"coupling_drawbar_tongue",label:"Drawbar/Towbar Tongue"},
+    {key:"coupling_safety_devices",label:"Safety Devices"},
+    {key:"coupling_saddle_mounts",label:"Saddle-Mounts"}
+  ]},
+  {num:3,title:"Exhaust System",items:[
+    {key:"exhaust_no_leaks_forward",label:"No leaks forward of/directly below the driver/sleeper compartment"},
+    {key:"exhaust_bus_no_leaking",label:"Bus: No leaking/discharging in violation of standard"},
+    {key:"exhaust_unlikely_to_burn",label:"Unlikely to burn, char, or damage the electrical wiring, fuel supply, or any combustible part of vehicle"}
+  ]},
+  {num:4,title:"Fuel System",items:[
+    {key:"fuel_no_visible_leak",label:"No visible leak"},
+    {key:"fuel_tank_filler_cap",label:"Fuel Tank Filler Cap"},
+    {key:"fuel_tank_securely_attached",label:"Fuel tank securely attached"}
+  ]},
+  {num:5,title:"Lighting Devices",items:[
+    {key:"lighting_required_lights",label:"All required lights/reflectors operable"}
+  ]},
+  {num:6,title:"Safe Loading",items:[
+    {key:"safe_loading_vehicle_parts",label:"Vehicle parts, load, dunnage, spare tire, etc., secured"},
+    {key:"safe_loading_front_end_structure",label:"Front End Structure"},
+    {key:"safe_loading_intermodal_securement",label:"Intermodal Container Securement Devices"}
+  ]},
+  {num:7,title:"Steering Mechanism",items:[
+    {key:"steering_wheel_free_play",label:"Steering Wheel Free Play"},
+    {key:"steering_column",label:"Steering Column"},
+    {key:"steering_front_axle_beam",label:"Front Axle Beam/All Other Steering Components"},
+    {key:"steering_gear_box",label:"Steering Gear Box"},
+    {key:"steering_pitman_arm",label:"Pitman Arm"},
+    {key:"steering_power_steering",label:"Power Steering"},
+    {key:"steering_ball_and_socket",label:"Ball and Socket Joints"},
+    {key:"steering_tie_rods",label:"Tie Rods and Drag Links"},
+    {key:"steering_nuts",label:"Nuts"},
+    {key:"steering_system",label:"Steering System"}
+  ]},
+  {num:8,title:"Suspension",items:[
+    {key:"suspension_axle_positioning",label:"Axle Positioning Parts"},
+    {key:"suspension_spring_assembly",label:"Spring Assembly"},
+    {key:"suspension_torque_radius_tracking",label:"Torque, Radius or Tracking Components"}
+  ]},
+  {num:9,title:"Frame",items:[
+    {key:"frame_members",label:"Frame Members"},
+    {key:"frame_tire_wheel_clearance",label:"Tire and Wheel Clearance"},
+    {key:"frame_adjustable_axle",label:"Adjustable Axle Assemblies (Sliding Subframes)"}
+  ]},
+  {num:10,title:"Tires",items:[
+    {key:"tires_steer_axle",label:"Steer-Axle Tires"},
+    {key:"tires_all_other",label:"All Other Tires"},
+    {key:"tires_speed_restricted",label:"Speed-Restricted Tires"}
+  ]},
+  {num:11,title:"Wheels and Rims",items:[
+    {key:"wheels_lock_side_ring",label:"Lock or Side Ring"},
+    {key:"wheels_and_rims",label:"Wheels and Rims"},
+    {key:"wheels_fasteners",label:"Fasteners"},
+    {key:"wheels_welds",label:"Welds"}
+  ]},
+  {num:12,title:"Windshield Glazing",items:[
+    {key:"windshield_glazing",label:"No cracks, discoloration, obstacles, etc. (see 393.60 for exceptions)"}
+  ]},
+  {num:13,title:"Windshield Wipers",items:[
+    {key:"windshield_wipers",label:"No missing, damaged, or inoperable wipers"}
+  ]},
+  {num:14,title:"Motorcoach Seats",items:[
+    {key:"motorcoach_seats",label:"Seats securely fastened to the vehicle structure"}
+  ]},
+  {num:15,title:"Rear Impact Guard",items:[
+    {key:"rear_impact_guard",label:"In place, securely attached, proper size, proper placement (see 393.86)"}
+  ]}
 ];
+const DOT_ALL_ITEMS = DOT_SECTIONS.flatMap(s=>s.items.map(i=>({...i,section:s.num,sectionTitle:s.title})));
 const DOT_STATUSES = ["","OK","Needs repair","N/A"];
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -492,7 +565,7 @@ const WorkOrders = () => {
   const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");await loadJobs(wo.id);await loadNotes(wo.id);await loadParts(wo.id);await loadDot(wo);};
   const blankDot=(wo)=>{
     const cust=customers.find(c=>c.name===wo.customer);
-    return {carrier_operator:wo.customer||"",carrier_address:cust?.address||"",inspector:user.name||"",inspection_date:new Date().toISOString().split("T")[0],vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",odometer:"",overall_result:"",inspector_qualified:false,components:{}};
+    return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:cust?.address||"",city:"",state:"",zip:"",inspector:user.name||"",inspection_date:new Date().toISOString().split("T")[0],vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
   };
   const loadDot=async(wo)=>{
     const{data}=await sb.from('dot_inspections').select('*').eq('work_order_id',wo.id).maybeSingle();
@@ -501,7 +574,7 @@ const WorkOrders = () => {
   const setDotField=(k,v)=>setDot(p=>({...p,[k]:v}));
   const setDotComp=(key,field,v)=>setDot(p=>({...p,components:{...p.components,[key]:{...(p.components[key]||{status:"",note:""}),[field]:v}}}));
   const saveDot=async()=>{
-    const payload={work_order_id:jobsModal.id,carrier_operator:dot.carrier_operator,carrier_address:dot.carrier_address,inspector:dot.inspector,inspection_date:dot.inspection_date||null,vehicle_make:dot.vehicle_make,vehicle_type:dot.vehicle_type,vin:dot.vin,unit_number:dot.unit_number,license_plate:dot.license_plate,odometer:dot.odometer,overall_result:dot.overall_result,inspector_qualified:dot.inspector_qualified,components:dot.components,created_by:user.name,updated_at:new Date().toISOString()};
+    const payload={work_order_id:jobsModal.id,report_number:dot.report_number||"",fleet_unit_number:dot.fleet_unit_number||"",carrier_operator:dot.carrier_operator,carrier_address:dot.carrier_address,city:dot.city||"",state:dot.state||"",zip:dot.zip||"",inspector:dot.inspector,inspection_date:dot.inspection_date||null,vehicle_make:dot.vehicle_make,vehicle_type:dot.vehicle_type,vin:dot.vin,unit_number:dot.unit_number,license_plate:dot.license_plate,other_id:dot.other_id||"",odometer:dot.odometer,inspection_agency_location:dot.inspection_agency_location||"",overall_result:dot.overall_result,inspector_qualified:dot.inspector_qualified,other_conditions:dot.other_conditions||"",components:dot.components,created_by:user.name,updated_at:new Date().toISOString()};
     const res=await sb.from('dot_inspections').upsert(payload,{onConflict:'work_order_id'}).select().single();
     if(res.error){alert("Could not save inspection: "+res.error.message);return;}
     setDot({...res.data,components:res.data.components||{}});
@@ -510,39 +583,90 @@ const WorkOrders = () => {
   };
   const printDot=()=>{
     const esc=s=>String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-    const rows=DOT_COMPONENTS.map(c=>{const cv=dot.components[c.key]||{};const mark=cv.status==="OK"?"☑ OK":cv.status==="Needs repair"?"☒ Needs repair":cv.status==="N/A"?"N/A":"—";return `<tr><td>${esc(c.label)}</td><td style="text-align:center;white-space:nowrap">${esc(mark)}</td><td>${esc(cv.note)}</td></tr>`;}).join("");
-    const html=`<!DOCTYPE html><html><head><title>DOT Annual Inspection — ${esc(jobsModal.id)}</title><style>
-      body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:32px;font-size:13px}
-      h1{font-size:18px;margin:0} .sub{color:#444;margin:2px 0 16px}
-      .hd{border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:14px}
-      table{width:100%;border-collapse:collapse;margin:10px 0}
-      th,td{border:1px solid #999;padding:6px 8px;font-size:12px;text-align:left;vertical-align:top}
-      th{background:#eee}
-      .grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;margin-bottom:8px}
-      .f{padding:3px 0} .f b{display:inline-block;min-width:140px}
-      .result{font-size:15px;font-weight:bold;margin:12px 0}
-      .sig{margin-top:30px;display:flex;justify-content:space-between}
-      .line{border-top:1px solid #000;width:45%;padding-top:4px;font-size:11px}
-      @media print{body{margin:12mm}}
+    const idCheck=v=>v&&String(v).trim()?"☑":"☐";
+    const renderSection=sec=>`<div class="sec"><div class="sec-hd">${sec.num}. ${esc(sec.title.toUpperCase())}</div><table class="comp"><tbody>${sec.items.map((it,i)=>{const cv=dot.components[it.key]||{};const ok=cv.status==="OK"?"✓":cv.status==="N/A"?"NA":"";const nr=cv.status==="Needs repair"?"✗":"";const rd=cv.repaired_date||"";const letter=sec.items.length>1?String.fromCharCode(97+i)+". ":"";return `<tr><td class="m">${ok}</td><td class="m">${nr}</td><td class="rd">${esc(rd)}</td><td>${esc(letter)}${esc(it.label)}</td></tr>`;}).join("")}</tbody></table></div>`;
+    const left=DOT_SECTIONS.filter(s=>s.num<=7).map(renderSection).join("");
+    const right=DOT_SECTIONS.filter(s=>s.num>=8).map(renderSection).join("");
+    const html=`<!DOCTYPE html><html><head><title>Annual Vehicle Inspection Report — ${esc(jobsModal.id)}</title><style>
+      *{box-sizing:border-box}
+      body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:12mm;font-size:11px;line-height:1.3}
+      .shop{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid #999;padding-bottom:6px;margin-bottom:8px}
+      .shop .name{font-weight:bold;font-size:14px}
+      .shop .addr{font-size:11px;color:#444}
+      h1{text-align:center;font-size:17px;letter-spacing:1px;margin:6px 0 10px}
+      .red{background:#e74c3c;color:#fff;font-weight:bold;font-size:10px;padding:3px 8px;letter-spacing:.5px}
+      .hist{border:1px solid #888;margin-bottom:8px}
+      .hist .lbl{display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;font-weight:bold;color:#fff;background:#e74c3c}
+      .hist .lbl div{padding:3px 6px;border-right:1px solid #fff}
+      .hist .lbl div:last-child{border-right:none}
+      .hist .val{display:grid;grid-template-columns:1fr 1fr 1fr;font-size:12px;font-weight:bold}
+      .hist .val div{padding:6px;border-right:1px solid #888;min-height:22px}
+      .hist .val div:last-child{border-right:none}
+      .meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #888;margin-bottom:8px}
+      .meta .col{padding:6px 8px}
+      .meta .col + .col{border-left:1px solid #888}
+      .field{margin-bottom:6px}
+      .field .lbl{font-size:8px;font-weight:bold;text-transform:uppercase;color:#444;letter-spacing:.3px}
+      .field .v{border-bottom:1px solid #aaa;min-height:14px;padding:1px 2px;font-size:11px}
+      .vt span{margin-right:8px;font-size:10px}
+      .id-row{display:flex;gap:6px;font-size:10px;align-items:center;margin-top:2px}
+      .id-row .lbl-id{width:55px;font-weight:bold;font-size:9px}
+      .id-row .id{flex:1;border-bottom:1px solid #aaa;padding:1px 2px;font-size:11px}
+      .twocol{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+      .sec{margin-bottom:5px;break-inside:avoid;page-break-inside:avoid}
+      .sec-hd{background:#e74c3c;color:#fff;font-weight:bold;font-size:10px;padding:3px 6px;letter-spacing:.3px}
+      table.comp{width:100%;border-collapse:collapse;font-size:10px}
+      table.comp td{border:1px solid #999;padding:2px 6px;vertical-align:middle}
+      table.comp td.m{text-align:center;width:24px;font-size:13px;font-weight:bold}
+      table.comp td.rd{width:60px;font-size:9px;text-align:center}
+      .other{border:1px solid #888;margin-top:6px;break-inside:avoid}
+      .other-hd{background:#e74c3c;color:#fff;font-weight:bold;font-size:10px;padding:3px 6px}
+      .other-body{padding:6px 8px;min-height:42px;white-space:pre-wrap;font-size:11px}
+      .result-line{margin-top:8px;font-size:11px}
+      .cert{margin-top:8px;font-weight:bold;font-size:10px;text-align:center;border-top:1px solid #000;padding-top:6px}
+      .sig{margin-top:14px;display:flex;justify-content:space-between;gap:20px}
+      .sig .line{border-top:1px solid #000;flex:1;padding-top:3px;font-size:9px}
+      .legend{font-size:9px;margin:4px 0 6px}
+      @media print{body{margin:10mm} .twocol{gap:5px} .sec{margin-bottom:4px}}
     </style></head><body>
-      <div class="hd"><h1>${esc(SHOP.name)}</h1><div class="sub">${esc(SHOP.address)}</div>
-      <div style="font-weight:bold;font-size:15px">Annual Vehicle Inspection Report (49 CFR 396, App. A)</div></div>
-      <div class="grid">
-        <div class="f"><b>Motor carrier operator:</b> ${esc(dot.carrier_operator)}</div>
-        <div class="f"><b>Inspection date:</b> ${esc(dot.inspection_date)}</div>
-        <div class="f"><b>Address:</b> ${esc(dot.carrier_address)}</div>
-        <div class="f"><b>Work order:</b> ${esc(jobsModal.id)}</div>
-        <div class="f"><b>Inspector:</b> ${esc(dot.inspector)}</div>
-        <div class="f"><b>Unit / fleet #:</b> ${esc(dot.unit_number)}</div>
-        <div class="f"><b>VIN:</b> ${esc(dot.vin)}</div>
-        <div class="f"><b>Make:</b> ${esc(dot.vehicle_make)}</div>
-        <div class="f"><b>Vehicle type:</b> ${esc(dot.vehicle_type)}</div>
-        <div class="f"><b>License plate:</b> ${esc(dot.license_plate)}</div>
-        <div class="f"><b>Odometer:</b> ${esc(dot.odometer)}</div>
+      <div class="shop">
+        <div><div class="name">${esc(SHOP.name)}</div><div class="addr">${esc(SHOP.address)}</div></div>
+        <div style="font-size:10px;text-align:right">Work Order: <b>${esc(jobsModal.id)}</b></div>
       </div>
-      <table><thead><tr><th style="width:32%">Component inspected</th><th style="width:18%">Result</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="result">Inspection result: ${esc(dot.overall_result||"—")}</div>
-      <div>${dot.inspector_qualified?"☑":"☐"} The undersigned certifies that the inspector is qualified per 49 CFR 396.19.</div>
+      <h1>ANNUAL VEHICLE INSPECTION REPORT</h1>
+      <div class="hist">
+        <div class="lbl"><div>REPORT NUMBER</div><div>FLEET UNIT NUMBER</div><div>DATE</div></div>
+        <div class="val"><div>${esc(dot.report_number)}</div><div>${esc(dot.fleet_unit_number)}</div><div>${esc(dot.inspection_date)}</div></div>
+      </div>
+      <div class="meta">
+        <div class="col">
+          <div class="field"><div class="lbl">Motor Carrier Operator</div><div class="v">${esc(dot.carrier_operator)}</div></div>
+          <div class="field"><div class="lbl">Address</div><div class="v">${esc(dot.carrier_address)}</div></div>
+          <div class="field"><div class="lbl">City, State, Zip Code</div><div class="v">${esc([dot.city,dot.state,dot.zip].filter(Boolean).join(", "))}</div></div>
+          <div class="field vt"><div class="lbl">Vehicle Type</div>
+            <div>${["Tractor","Trailer","Truck","Bus","Other"].map(t=>`<span>${dot.vehicle_type===t?"☑":"☐"} ${t}</span>`).join("")}</div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="field"><div class="lbl">Inspector's Name (Print or Type)</div><div class="v">${esc(dot.inspector)}</div></div>
+          <div style="font-size:10px;margin-bottom:6px">${dot.inspector_qualified?"☑":"☐"} <b>This inspector meets the qualification requirements in section 396.19</b></div>
+          <div class="field"><div class="lbl">Vehicle Identification (✓ and complete)</div>
+            <div class="id-row"><span class="lbl-id">${idCheck(dot.license_plate)} Lic.Plate</span><span class="id">${esc(dot.license_plate)}</span></div>
+            <div class="id-row"><span class="lbl-id">${idCheck(dot.vin)} VIN</span><span class="id">${esc(dot.vin)}</span></div>
+            <div class="id-row"><span class="lbl-id">${idCheck(dot.other_id)} Other</span><span class="id">${esc(dot.other_id)}</span></div>
+          </div>
+          <div class="field"><div class="lbl">Inspection Agency / Location (optional)</div><div class="v">${esc(dot.inspection_agency_location)}</div></div>
+        </div>
+      </div>
+      <div class="red" style="text-align:center">VEHICLE COMPONENTS INSPECTED</div>
+      <div class="legend"><b>INSTRUCTIONS:</b> Mark column entries to verify inspection: ✓ OK, ✗ NEEDS REPAIR, NA if items do not apply, ___ REPAIRED DATE</div>
+      <div class="twocol"><div>${left}</div><div>${right}</div></div>
+      <div class="other">
+        <div class="other-hd">16. OTHER — List any other condition(s) which may prevent safe operation of this vehicle.</div>
+        <div class="other-body">${esc(dot.other_conditions)}</div>
+      </div>
+      <div class="result-line"><b>Overall Result:</b> ${esc(dot.overall_result||"—")}</div>
+      <div class="cert">CERTIFICATION: THIS VEHICLE HAS PASSED ALL THE INSPECTION ITEMS FOR THE ANNUAL VEHICLE INSPECTION IN ACCORDANCE WITH 49 CFR PART 396.</div>
       <div class="sig"><div class="line">Inspector signature</div><div class="line">Date</div></div>
     </body></html>`;
     const w=window.open("","_blank");
@@ -889,46 +1013,84 @@ const WorkOrders = () => {
           )}
           {jobTab==="dot"&&dot&&(
             <div>
-              <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:16}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:10}}>Inspection details</div>
+              <div style={{border:"1px solid #ddd",borderRadius:8,padding:14,marginBottom:14,background:"#fff"}}>
+                <div style={{fontSize:11,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Vehicle History Record</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                  <Field label="Report number" value={dot.report_number||""} onChange={v=>setDotField("report_number",v)}/>
+                  <Field label="Fleet unit number" value={dot.fleet_unit_number||""} onChange={v=>setDotField("fleet_unit_number",v)}/>
+                  <Field label="Date" value={dot.inspection_date||""} onChange={v=>setDotField("inspection_date",v)} type="date"/>
+                </div>
+              </div>
+              <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
+                <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Carrier / Inspector</div>
+                <Field label="Motor carrier operator" value={dot.carrier_operator} onChange={v=>setDotField("carrier_operator",v)}/>
+                <Field label="Address" value={dot.carrier_address} onChange={v=>setDotField("carrier_address",v)}/>
+                <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:12}}>
+                  <Field label="City" value={dot.city||""} onChange={v=>setDotField("city",v)}/>
+                  <Field label="State" value={dot.state||""} onChange={v=>setDotField("state",v)}/>
+                  <Field label="ZIP" value={dot.zip||""} onChange={v=>setDotField("zip",v)}/>
+                </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                  <Field label="Motor carrier operator" value={dot.carrier_operator} onChange={v=>setDotField("carrier_operator",v)}/>
-                  <Field label="Inspection date" value={dot.inspection_date||""} onChange={v=>setDotField("inspection_date",v)} type="date"/>
-                  <Field label="Address" value={dot.carrier_address} onChange={v=>setDotField("carrier_address",v)}/>
-                  <Field label="Inspector" value={dot.inspector} onChange={v=>setDotField("inspector",v)}/>
+                  <Field label="Inspector's name" value={dot.inspector} onChange={v=>setDotField("inspector",v)}/>
+                  <Field label="Inspection agency / location (optional)" value={dot.inspection_agency_location||""} onChange={v=>setDotField("inspection_agency_location",v)}/>
+                </div>
+                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:"#555",margin:"6px 0 2px"}}>
+                  <input type="checkbox" checked={!!dot.inspector_qualified} onChange={e=>setDotField("inspector_qualified",e.target.checked)} style={{width:16,height:16,accentColor:"#c0392b"}}/>
+                  Inspector meets the qualification requirements in 49 CFR 396.19
+                </label>
+              </div>
+              <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
+                <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Vehicle</div>
+                <Field label="Vehicle type" value={dot.vehicle_type} onChange={v=>setDotField("vehicle_type",v)} options={["","Tractor","Trailer","Truck","Bus","Other"]}/>
+                <div style={{fontSize:11,fontWeight:700,color:"#888",letterSpacing:0.5,margin:"4px 0 6px"}}>Vehicle identification (fill in what applies)</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                  <Field label="License plate no." value={dot.license_plate} onChange={v=>setDotField("license_plate",v)}/>
                   <Field label="VIN" value={dot.vin} onChange={v=>setDotField("vin",v)}/>
-                  <Field label="Unit / fleet #" value={dot.unit_number} onChange={v=>setDotField("unit_number",v)}/>
+                  <Field label="Other ID" value={dot.other_id||""} onChange={v=>setDotField("other_id",v)} placeholder="company unit, serial, etc."/>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
                   <Field label="Make" value={dot.vehicle_make} onChange={v=>setDotField("vehicle_make",v)} placeholder="Peterbilt"/>
-                  <Field label="Vehicle type" value={dot.vehicle_type} onChange={v=>setDotField("vehicle_type",v)} options={["","Truck","Trailer","Tractor","Bus","Other"]}/>
-                  <Field label="License plate" value={dot.license_plate} onChange={v=>setDotField("license_plate",v)}/>
+                  <Field label="Unit number" value={dot.unit_number} onChange={v=>setDotField("unit_number",v)}/>
                   <Field label="Odometer" value={dot.odometer} onChange={v=>setDotField("odometer",v)}/>
                 </div>
               </div>
-              <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:8}}>Components inspected (FMCSA Appendix A)</div>
-              {DOT_COMPONENTS.map(c=>{
-                const cv=dot.components[c.key]||{status:"",note:""};
-                const sc=cv.status==="OK"?"#27ae60":cv.status==="Needs repair"?"#c0392b":"#888";
-                return (
-                  <div key={c.key} style={{display:"grid",gridTemplateColumns:"180px 150px 1fr",gap:10,alignItems:"center",padding:"6px 0",borderBottom:"1px solid #f2f2f2"}}>
-                    <div style={{fontSize:13,fontWeight:600}}>{c.label}</div>
-                    <select value={cv.status} onChange={e=>setDotComp(c.key,"status",e.target.value)} style={{padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13,color:sc,fontWeight:600,background:"#fff"}}>
-                      {DOT_STATUSES.map(s=><option key={s} value={s}>{s||"—"}</option>)}
-                    </select>
-                    <input value={cv.note||""} onChange={e=>setDotComp(c.key,"note",e.target.value)} placeholder="Notes..." style={{padding:"6px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
+              <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,margin:"4px 0 6px"}}>Vehicle Components Inspected</div>
+              <div style={{fontSize:11,color:"#888",marginBottom:10}}>Mark each item: <strong>OK</strong>, <strong>Needs repair</strong>, or <strong>N/A</strong>. Fill <strong>Repaired Date</strong> if the item was fixed.</div>
+              {DOT_SECTIONS.map(sec=>(
+                <div key={sec.num} style={{marginBottom:12,border:"1px solid #eee",borderRadius:8,overflow:"hidden"}}>
+                  <div style={{background:"#fdecea",color:"#c0392b",padding:"6px 12px",fontSize:13,fontWeight:800}}>{sec.num}. {sec.title.toUpperCase()}</div>
+                  <div style={{padding:"4px 12px"}}>
+                    {sec.items.map((it,idx)=>{
+                      const cv=dot.components[it.key]||{status:"",repaired_date:""};
+                      const sc=cv.status==="OK"?"#27ae60":cv.status==="Needs repair"?"#c0392b":"#888";
+                      const letter=sec.items.length>1?String.fromCharCode(97+idx)+". ":"";
+                      return (
+                        <div key={it.key} style={{display:"grid",gridTemplateColumns:"1fr 140px 150px",gap:10,alignItems:"center",padding:"6px 0",borderBottom:idx<sec.items.length-1?"1px solid #f5f5f5":"none"}}>
+                          <div style={{fontSize:13}}>{letter}{it.label}</div>
+                          <select value={cv.status} onChange={e=>setDotComp(it.key,"status",e.target.value)} style={{padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13,color:sc,fontWeight:600,background:"#fff"}}>
+                            {DOT_STATUSES.map(s=><option key={s} value={s}>{s||"—"}</option>)}
+                          </select>
+                          <input type="date" value={cv.repaired_date||""} onChange={e=>setDotComp(it.key,"repaired_date",e.target.value)} title="Repaired date" style={{padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:12}}/>
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-              <div style={{display:"flex",alignItems:"center",gap:20,marginTop:16,flexWrap:"wrap"}}>
+                </div>
+              ))}
+              <div style={{marginBottom:12,border:"1px solid #eee",borderRadius:8,overflow:"hidden"}}>
+                <div style={{background:"#fdecea",color:"#c0392b",padding:"6px 12px",fontSize:13,fontWeight:800}}>16. OTHER</div>
+                <div style={{padding:12}}>
+                  <div style={{fontSize:12,color:"#888",marginBottom:6}}>List any other condition(s) which may prevent safe operation of this vehicle.</div>
+                  <textarea value={dot.other_conditions||""} onChange={e=>setDotField("other_conditions",e.target.value)} rows={4} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:6,fontSize:13,resize:"vertical"}}/>
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:20,marginTop:8,flexWrap:"wrap"}}>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:13,fontWeight:600,color:"#555"}}>Overall result:</span>
                   <select value={dot.overall_result} onChange={e=>setDotField("overall_result",e.target.value)} style={{padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,fontWeight:700,background:"#fff",color:dot.overall_result==="Pass"?"#27ae60":dot.overall_result==="Fail"?"#c0392b":"#555"}}>
                     {["","Pass","Fail"].map(s=><option key={s} value={s}>{s||"—"}</option>)}
                   </select>
                 </div>
-                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:"#555"}}>
-                  <input type="checkbox" checked={!!dot.inspector_qualified} onChange={e=>setDotField("inspector_qualified",e.target.checked)} style={{width:16,height:16,accentColor:"#c0392b"}}/>
-                  Inspector qualified per 49 CFR 396.19
-                </label>
               </div>
               <div style={{display:"flex",gap:10,marginTop:16}}>
                 <button onClick={saveDot} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>💾 Save Inspection</button>
