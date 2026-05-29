@@ -485,6 +485,8 @@ const WorkOrders = () => {
   const [partForm,setPartForm]=useState({name:"",description:"",part_number:"",quantity:1,status:"Pending Order",eta_delivery:""});
   const [shopSupply,setShopSupply]=useState("");
   const [dot,setDot]=useState(null);
+  const [woReminders,setWoReminders]=useState([]);
+  const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
   const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:new Date().toISOString().split("T")[0],is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [editId,setEditId]=useState(null);
@@ -598,7 +600,26 @@ const WorkOrders = () => {
   };
   const loadJobs=async(woId)=>{const{data}=await sb.from('jobs').select('*').eq('work_order_id',woId).order('created_at');setJobsList(data||[]);};
   const loadParts=async(woId)=>{const{data}=await sb.from('parts').select('*').eq('work_order_id',woId).order('created_at');setPartsList(data||[]);};
-  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");await loadJobs(wo.id);await loadNotes(wo.id);await loadParts(wo.id);await loadDot(wo);};
+  const loadWoReminders=async(woId)=>{const{data}=await sb.from('reminders').select('*').eq('work_order_id',woId).order('created_at',{ascending:false});setWoReminders(data||[]);};
+  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");setRemForm({id:null,reminder_date:"",note:""});await loadJobs(wo.id);await loadNotes(wo.id);await loadParts(wo.id);await loadDot(wo);await loadWoReminders(wo.id);};
+  const saveWoReminder=async()=>{
+    const t=(remForm.note||"").trim(); if(!t)return;
+    const payload={customer_name:jobsModal.customer,equipment_label:jobsModal.unit_number||"",work_order_id:jobsModal.id,reminder_date:remForm.reminder_date||null,note:t,created_by:user.name};
+    if(remForm.id){
+      const res=await sb.from('reminders').update(payload).eq('id',remForm.id);
+      if(res.error){alert("Could not save: "+res.error.message);return;}
+      audit(user,"update","reminder",remForm.id,`${jobsModal.id} — ${jobsModal.customer}`,t.slice(0,120));
+    }else{
+      const {data:inserted,error}=await sb.from('reminders').insert([payload]).select().single();
+      if(error){alert("Could not save: "+error.message);return;}
+      audit(user,"create","reminder",inserted?.id,`${jobsModal.id} — ${jobsModal.customer}`,t.slice(0,120));
+    }
+    setRemForm({id:null,reminder_date:"",note:""});
+    loadWoReminders(jobsModal.id);
+  };
+  const editWoReminder=r=>setRemForm({id:r.id,reminder_date:r.reminder_date||"",note:r.note||""});
+  const completeWoReminder=async(id)=>{await sb.from('reminders').update({completed:true}).eq('id',id);audit(user,"status_change","reminder",id,`${jobsModal.id}`,`completed: false → true`);loadWoReminders(jobsModal.id);};
+  const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;await sb.from('reminders').delete().eq('id',id);audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
   const blankDot=(wo)=>{
     const cust=customers.find(c=>c.name===wo.customer);
     return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:cust?.address||"",city:"",state:"",zip:"",inspector:user.name||"",inspection_date:new Date().toISOString().split("T")[0],vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
@@ -986,6 +1007,7 @@ const WorkOrders = () => {
             <button className={`tab-btn${jobTab==="supply"?" active":""}`} onClick={()=>setJobTab("supply")}>🧴 Shop Supply</button>
             <button className={`tab-btn${jobTab==="notes"?" active":""}`} onClick={()=>{setJobTab("notes");loadNotes(jobsModal.id);}}>📝 Notes ({notesList.length})</button>
             <button className={`tab-btn${jobTab==="dot"?" active":""}`} onClick={()=>setJobTab("dot")}>🛡️ DOT Inspection</button>
+            <button className={`tab-btn${jobTab==="reminders"?" active":""}`} onClick={()=>setJobTab("reminders")}>🔔 Reminders ({woReminders.length})</button>
           </div>
           {jobTab==="jobs"&&(
             <div>
@@ -1246,6 +1268,37 @@ const WorkOrders = () => {
               </div>
             </div>
           )}
+          {jobTab==="reminders"&&(
+            <div>
+              <div style={{background:"#f8f9fa",borderRadius:10,padding:14,marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:8}}>{remForm.id?"Edit reminder":`Add reminder for ${jobsModal.id}`}</div>
+                <Field label="Due date" value={remForm.reminder_date} onChange={v=>setRemForm(p=>({...p,reminder_date:v}))} type="date"/>
+                <Field label="Note" value={remForm.note} onChange={v=>setRemForm(p=>({...p,note:v}))} type="textarea" required placeholder="e.g. Call before delivery, DOT due..."/>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={saveWoReminder} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{remForm.id?"Save Changes":"+ Add Reminder"}</button>
+                  {remForm.id&&<button onClick={()=>setRemForm({id:null,reminder_date:"",note:""})} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel edit</button>}
+                </div>
+              </div>
+              {woReminders.length===0?<p style={{color:"#aaa",fontSize:13,textAlign:"center",padding:20}}>No reminders for this work order yet.</p>:woReminders.map(r=>(
+                <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":"#fff"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:14,color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":""}}>{r.note}</div>
+                      <div style={{fontSize:12,color:"#888",marginTop:4}}>
+                        {r.reminder_date&&<span>📅 {fmtDay(r.reminder_date)} &nbsp;</span>}
+                        <span>👤 {r.created_by} · {fmtDate(r.created_at)}</span>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      {!r.completed&&<button onClick={()=>completeWoReminder(r.id)} title="Mark done" style={{padding:"5px 10px",background:"#27ae60",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>✓</button>}
+                      <button onClick={()=>editWoReminder(r)} title="Edit" style={{padding:"5px 10px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>✏️</button>
+                      <button onClick={()=>delWoReminder(r.id)} title="Delete" style={{padding:"5px 10px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>🗑</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </Modal>
       )}
 
@@ -1279,13 +1332,59 @@ const Customers = () => {
   const EMPTY={name:"",address:"",phone:"",email:"",notes:"",mc_number:"",dot_number:""};
   const [form,setForm]=useState(EMPTY);
   const [paidByCustomer,setPaidByCustomer]=useState({});
+  const [remCountByCustomer,setRemCountByCustomer]=useState({});
+  const [remTarget,setRemTarget]=useState(null);
+  const [custReminders,setCustReminders]=useState([]);
+  const [custEquipment,setCustEquipment]=useState([]);
+  const [custWos,setCustWos]=useState([]);
+  const [custRemForm,setCustRemForm]=useState({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});
   const load=async()=>{const{data}=await sb.from('customers').select('*').order('created_at',{ascending:false});setList(data||[]);setLoading(false);};
   const loadPaid=async()=>{
     const{data}=await sb.from('work_orders').select('customer').eq('status','Paid').eq('is_voided',false);
     const map={};(data||[]).forEach(w=>{map[w.customer]=(map[w.customer]||0)+1;});
     setPaidByCustomer(map);
   };
-  useEffect(()=>{load();loadPaid();},[]);
+  const loadRemCounts=async()=>{
+    const{data}=await sb.from('reminders').select('customer_name').eq('completed',false);
+    const map={};(data||[]).forEach(r=>{map[r.customer_name]=(map[r.customer_name]||0)+1;});
+    setRemCountByCustomer(map);
+  };
+  const loadCustReminders=async(custName)=>{
+    const{data}=await sb.from('reminders').select('*').eq('customer_name',custName).order('created_at',{ascending:false});
+    setCustReminders(data||[]);
+  };
+  const openCustReminders=async(c)=>{
+    setRemTarget(c);
+    const[er,wr]=await Promise.all([
+      sb.from('equipment').select('*').eq('customer_id',c.id),
+      sb.from('work_orders').select('id,unit_number').eq('customer',c.name).eq('is_voided',false)
+    ]);
+    setCustEquipment(er.data||[]); setCustWos(wr.data||[]);
+    await loadCustReminders(c.name);
+  };
+  const closeCustReminders=()=>{setRemTarget(null);setCustReminders([]);setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});loadRemCounts();};
+  const saveCustReminder=async()=>{
+    const t=(custRemForm.note||"").trim(); if(!t)return;
+    const eqId=custRemForm.equipment_id?Number(custRemForm.equipment_id):null;
+    const eqRow=eqId?custEquipment.find(e=>e.id===eqId):null;
+    const label=eqRow?`${eqRow.year||""} ${eqRow.make||""} ${eqRow.model||eqRow.type||""}`.trim()+(eqRow.unit_number?` · #${eqRow.unit_number}`:"")+(eqRow.vin?` · ${eqRow.vin}`:""):(custRemForm.work_order_id?`WO ${custRemForm.work_order_id}`:remTarget.name);
+    const payload={customer_name:remTarget.name,equipment_id:eqId,equipment_label:label.trim(),work_order_id:custRemForm.work_order_id||null,reminder_date:custRemForm.reminder_date||null,note:t,created_by:user.name};
+    if(custRemForm.id){
+      const res=await sb.from('reminders').update(payload).eq('id',custRemForm.id);
+      if(res.error){alert("Could not save: "+res.error.message);return;}
+      audit(user,"update","reminder",custRemForm.id,`${remTarget.name} — ${label}`,t.slice(0,120));
+    }else{
+      const {data:inserted,error}=await sb.from('reminders').insert([payload]).select().single();
+      if(error){alert("Could not save: "+error.message);return;}
+      audit(user,"create","reminder",inserted?.id,`${remTarget.name} — ${label}`,t.slice(0,120));
+    }
+    setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});
+    loadCustReminders(remTarget.name);
+  };
+  const editCustReminder=r=>setCustRemForm({id:r.id,equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||""});
+  const completeCustReminder=async(id)=>{await sb.from('reminders').update({completed:true}).eq('id',id);audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);loadCustReminders(remTarget.name);};
+  const delCustReminder=async(id)=>{if(!confirm("Delete reminder?"))return;await sb.from('reminders').delete().eq('id',id);audit(user,"delete","reminder",id,`${remTarget?.name||""}`);loadCustReminders(remTarget.name);if(custRemForm.id===id)setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});};
+  useEffect(()=>{load();loadPaid();loadRemCounts();},[]);
   const q=search.toLowerCase();
   const filtered=list.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.email||"").toLowerCase().includes(q)||(c.mc_number||"").toLowerCase().includes(q)||(c.dot_number||"").toLowerCase().includes(q));
   const openAdd=()=>{setForm(EMPTY);setEditId(null);setModal(true);};
@@ -1336,6 +1435,7 @@ const Customers = () => {
               </div>
               <div style={{display:"flex",gap:8,marginLeft:16,flexWrap:"wrap",justifyContent:"flex-end"}}>
                 <button onClick={()=>setEquipTarget(c)} style={{padding:"8px 14px",background:"#3498db",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>🚛 Equipment</button>
+                <button onClick={()=>openCustReminders(c)} style={{padding:"8px 14px",background:"#e67e22",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>🔔 Reminders{remCountByCustomer[c.name]?` (${remCountByCustomer[c.name]})`:""}</button>
                 <button onClick={()=>openEdit(c)} style={{padding:"8px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>✏️ Edit</button>
                 <button onClick={()=>del(c.id)} style={{padding:"8px 12px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer"}}>🗑</button>
               </div>
@@ -1362,6 +1462,59 @@ const Customers = () => {
         </Modal>
       )}
       {equipTarget&&<EquipmentModal customerId={equipTarget.id} customerName={equipTarget.name} onClose={()=>setEquipTarget(null)}/>}
+      {remTarget&&(
+        <Modal title={`🔔 Reminders — ${remTarget.name}`} onClose={closeCustReminders} wide>
+          <div style={{background:"#f8f9fa",borderRadius:10,padding:14,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:8}}>{custRemForm.id?"Edit reminder":`Add reminder for ${remTarget.name}`}</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <div style={{marginBottom:14}}>
+                <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Equipment (optional)</label>
+                <select value={custRemForm.equipment_id} onChange={e=>setCustRemForm(p=>({...p,equipment_id:e.target.value}))} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>
+                  <option value="">— None —</option>
+                  {custEquipment.map(e=>{const lbl=`${e.year||""} ${e.make||""} ${e.model||e.type||""}`.trim()+(e.unit_number?` · #${e.unit_number}`:"")+(e.vin?` · ${e.vin}`:""); return <option key={e.id} value={String(e.id)}>{lbl||`Equipment ${e.id}`}</option>;})}
+                </select>
+              </div>
+              <div style={{marginBottom:14}}>
+                <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Work Order (optional)</label>
+                <select value={custRemForm.work_order_id} onChange={e=>setCustRemForm(p=>({...p,work_order_id:e.target.value}))} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>
+                  <option value="">— None —</option>
+                  {custWos.map(w=><option key={w.id} value={w.id}>{w.id}{w.unit_number?` · Unit ${w.unit_number}`:""}</option>)}
+                </select>
+              </div>
+            </div>
+            <Field label="Due date" value={custRemForm.reminder_date} onChange={v=>setCustRemForm(p=>({...p,reminder_date:v}))} type="date"/>
+            <Field label="Note" value={custRemForm.note} onChange={v=>setCustRemForm(p=>({...p,note:v}))} type="textarea" required placeholder="e.g. Annual DOT inspection due, contact for service..."/>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={saveCustReminder} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{custRemForm.id?"Save Changes":"+ Add Reminder"}</button>
+              {custRemForm.id&&<button onClick={()=>setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""})} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel edit</button>}
+            </div>
+          </div>
+          {custReminders.length===0?<p style={{color:"#aaa",fontSize:13,textAlign:"center",padding:20}}>No reminders for this customer yet.</p>:custReminders.map(r=>{
+            const today=new Date().toISOString().split('T')[0];
+            const overdue=!r.completed&&r.reminder_date&&r.reminder_date<today;
+            return (
+              <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":overdue?"#f5c6cb":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":overdue?"#fff5f5":"#fff"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:14,color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":""}}>{r.note}</div>
+                    <div style={{fontSize:12,color:"#888",marginTop:4}}>
+                      {r.equipment_label&&<span>📋 {r.equipment_label} &nbsp;</span>}
+                      {r.work_order_id&&<span>🔧 {r.work_order_id} &nbsp;</span>}
+                      {r.reminder_date&&<span>📅 {fmtDay(r.reminder_date)} &nbsp;</span>}
+                      <span>👤 {r.created_by} · {fmtDate(r.created_at)}</span>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    {!r.completed&&<button onClick={()=>completeCustReminder(r.id)} title="Mark done" style={{padding:"5px 10px",background:"#27ae60",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>✓</button>}
+                    <button onClick={()=>editCustReminder(r)} title="Edit" style={{padding:"5px 10px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>✏️</button>
+                    <button onClick={()=>delCustReminder(r.id)} title="Delete" style={{padding:"5px 10px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>🗑</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </Modal>
+      )}
     </div>
   );
 };
@@ -1432,9 +1585,75 @@ const Appointments = () => {
 // ─── REMINDERS PAGE ───────────────────────────────────────────────────────────
 const RemindersPage = () => {
   const user = useContext(UserCtx);
-  const [list,setList]=useState([]); const [loading,setLoading]=useState(true); const [filter,setFilter]=useState("pending");
-  const load=async()=>{const{data}=await sb.from('reminders').select('*').order('reminder_date',{ascending:true});setList(data||[]);setLoading(false);};
+  const [list,setList]=useState([]);
+  const [customers,setCustomers]=useState([]);
+  const [equipment,setEquipment]=useState([]);
+  const [workOrders,setWorkOrders]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [filter,setFilter]=useState("pending");
+  const [sortBy,setSortBy]=useState(null);
+  const [sortDir,setSortDir]=useState("asc");
+  const [modal,setModal]=useState(false);
+  const [editId,setEditId]=useState(null);
+  const EMPTY={customer_name:"",equipment_id:"",work_order_id:"",reminder_date:"",note:""};
+  const [form,setForm]=useState(EMPTY);
+
+  const load=async()=>{
+    const [rr,cr,er,wr]=await Promise.all([
+      sb.from('reminders').select('*').order('created_at',{ascending:false}),
+      sb.from('customers').select('id,name').order('name'),
+      sb.from('equipment').select('*'),
+      sb.from('work_orders').select('id,customer,unit_number,is_voided').eq('is_voided',false)
+    ]);
+    setList(rr.data||[]); setCustomers(cr.data||[]); setEquipment(er.data||[]); setWorkOrders(wr.data||[]); setLoading(false);
+  };
   useEffect(()=>{load();},[]);
+
+  const today=new Date().toISOString().split('T')[0];
+  const statusOf=r=>r.completed?"completed":(r.reminder_date&&r.reminder_date<today)?"overdue":"pending";
+  const filtered=list.filter(r=>filter==="all"?true:filter==="pending"?!r.completed:filter==="overdue"?statusOf(r)==="overdue":r.completed);
+
+  const sortVal=(r,k)=>{
+    if(k==="customer") return (r.customer_name||"").toLowerCase();
+    if(k==="source") return (r.equipment_label||r.work_order_id||"").toLowerCase();
+    if(k==="due") return r.reminder_date||"9999-99-99";
+    if(k==="note") return (r.note||"").toLowerCase();
+    if(k==="created") return r.created_at||"";
+    if(k==="by") return (r.created_by||"").toLowerCase();
+    if(k==="status") return statusOf(r);
+    return "";
+  };
+  const cmp=(a,b)=>a<b?-1:a>b?1:0;
+  const sorted=sortBy
+    ? [...filtered].sort((a,b)=>{const r=cmp(sortVal(a,sortBy),sortVal(b,sortBy));return sortDir==="asc"?r:-r;})
+    : [...filtered].sort((a,b)=>cmp(b.created_at||"",a.created_at||""));
+  const onSort=k=>{
+    if(sortBy!==k){setSortBy(k);setSortDir("asc");}
+    else if(sortDir==="asc") setSortDir("desc");
+    else setSortBy(null);
+  };
+  const sortArrow=k=>sortBy===k?(sortDir==="asc"?" ↑":" ↓"):"";
+
+  const openAdd=()=>{setForm(EMPTY);setEditId(null);setModal(true);};
+  const openEdit=r=>{setForm({customer_name:r.customer_name||"",equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||""});setEditId(r.id);setModal(true);};
+  const closeModal=()=>{setModal(false);setEditId(null);setForm(EMPTY);};
+  const save=async()=>{
+    if(!form.customer_name||!form.note.trim()){alert("Customer and note are required.");return;}
+    const eqId=form.equipment_id?Number(form.equipment_id):null;
+    const eqRow=eqId?equipment.find(e=>e.id===eqId):null;
+    const label=eqRow?`${eqRow.year||""} ${eqRow.make||""} ${eqRow.model||eqRow.type||""}`.trim()+(eqRow.unit_number?` · #${eqRow.unit_number}`:"")+(eqRow.vin?` · ${eqRow.vin}`:""):(form.work_order_id?`WO ${form.work_order_id}`:form.customer_name);
+    const payload={customer_name:form.customer_name,equipment_id:eqId,equipment_label:label.trim(),work_order_id:form.work_order_id||null,reminder_date:form.reminder_date||null,note:form.note.trim(),created_by:user.name};
+    if(editId){
+      const res=await sb.from('reminders').update(payload).eq('id',editId);
+      if(res.error){alert("Could not save: "+res.error.message);return;}
+      audit(user,"update","reminder",editId,`${form.customer_name} — ${payload.equipment_label}`,payload.note.slice(0,120));
+    }else{
+      const {data:inserted,error}=await sb.from('reminders').insert([payload]).select().single();
+      if(error){alert("Could not create: "+error.message);return;}
+      audit(user,"create","reminder",inserted?.id,`${form.customer_name} — ${payload.equipment_label}`,payload.note.slice(0,120));
+    }
+    closeModal();load();
+  };
   const complete=async(id)=>{
     const prev=list.find(r=>r.id===id);
     await sb.from('reminders').update({completed:true}).eq('id',id);
@@ -1448,38 +1667,93 @@ const RemindersPage = () => {
     audit(user,"delete","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`);
     load();
   };
-  const today=new Date().toISOString().split('T')[0];
-  const filtered=list.filter(r=>filter==="all"?true:filter==="pending"?!r.completed:filter==="overdue"?!r.completed&&r.reminder_date&&r.reminder_date<today:r.completed);
+
+  const selectedCust=customers.find(c=>c.name===form.customer_name);
+  const equipForCustomer=selectedCust?equipment.filter(e=>e.customer_id===selectedCust.id):[];
+  const wosForCustomer=form.customer_name?workOrders.filter(w=>w.customer===form.customer_name):[];
+
   if(loading) return <Loading/>;
+  const th=(k,label)=>(<th onClick={()=>onSort(k)} style={{textAlign:"left",padding:"10px 14px",fontSize:11,fontWeight:700,color:sortBy===k?"#c0392b":"#666",letterSpacing:1,textTransform:"uppercase",borderBottom:"2px solid #f0f0f0",cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"}} title="Click to sort">{label}{sortArrow(k)}</th>);
+
   return (
     <div>
-      <h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Reminders</h1>
-      <div style={{display:"flex",gap:8,marginBottom:20}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Reminders</h1>
+        <Btn label="Create reminder" onClick={openAdd} color="#c0392b" icon="🔔"/>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:14,alignItems:"center",flexWrap:"wrap"}}>
         {[["pending","Pending"],["overdue","Overdue 🔴"],["completed","Completed"],["all","All"]].map(([k,l])=>(
           <button key={k} onClick={()=>setFilter(k)} style={{padding:"8px 16px",background:filter===k?"#1a1a2e":"#f0f0f0",color:filter===k?"#fff":"#555",border:"none",borderRadius:20,cursor:"pointer",fontSize:13,fontWeight:filter===k?700:400}}>{l}</button>
         ))}
+        {sortBy&&<button onClick={()=>setSortBy(null)} style={{padding:"7px 14px",background:"#fff",color:"#c0392b",border:"1px solid #c0392b",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:600}}>↺ Reset sort</button>}
       </div>
-      <div style={{background:"#fff",borderRadius:12,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-        {filtered.length===0?<p style={{color:"#aaa",textAlign:"center",padding:30}}>No reminders found.</p>:filtered.map(r=>(
-          <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":r.reminder_date&&r.reminder_date<today?"#f5c6cb":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":r.reminder_date&&r.reminder_date<today?"#fff5f5":"#fff"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:14,color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":""}}>{r.note}</div>
-                <div style={{fontSize:13,color:"#555",marginTop:4}}><strong>{r.customer_name}</strong> — {r.equipment_label}</div>
-                <div style={{fontSize:12,color:"#888",marginTop:4}}>
-                  {r.reminder_date&&<span>📅 {fmtDay(r.reminder_date)} &nbsp;</span>}
-                  {r.auto_days&&<span>🔄 Every {r.auto_days} days &nbsp;</span>}
-                  <span>👤 {r.created_by} · {fmtDate(r.created_at)}</span>
-                </div>
-              </div>
-              <div style={{display:"flex",gap:6,marginLeft:12}}>
-                {!r.completed&&<button onClick={()=>complete(r.id)} style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>✓ Done</button>}
-                <button onClick={()=>del(r.id)} style={{padding:"6px 10px",background:"none",border:"1px solid #eee",borderRadius:6,cursor:"pointer",color:"#e74c3c",fontSize:13}}>🗑</button>
-              </div>
+      <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:900}}>
+          <thead><tr>
+            {th("customer","Customer")}
+            {th("source","Source")}
+            {th("due","Due")}
+            {th("note","Note")}
+            {th("created","Created")}
+            {th("by","By")}
+            {th("status","Status")}
+            <th style={{padding:"10px 14px"}}></th>
+          </tr></thead>
+          <tbody>
+            {sorted.length===0?<tr><td colSpan={8} style={{textAlign:"center",padding:40,color:"#aaa"}}>No reminders.</td></tr>:sorted.map((r,i)=>{
+              const st=statusOf(r);
+              const stColor=st==="completed"?"#27ae60":st==="overdue"?"#c0392b":"#d4ac0d";
+              const stLabel=st==="completed"?"Completed":st==="overdue"?"Overdue":"Pending";
+              const source=r.work_order_id?`WO ${r.work_order_id}`:(r.equipment_label||"—");
+              return (
+                <tr key={r.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
+                  <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:600}}>{r.customer_name}</td>
+                  <td style={{padding:"10px 14px",fontSize:12,borderBottom:"1px solid #f5f5f5",color:"#555"}}>{source}</td>
+                  <td style={{padding:"10px 14px",fontSize:12,borderBottom:"1px solid #f5f5f5",whiteSpace:"nowrap"}}>{r.reminder_date?fmtDay(r.reminder_date):"—"}</td>
+                  <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5",color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":""}}>{r.note}</td>
+                  <td style={{padding:"10px 14px",fontSize:11,borderBottom:"1px solid #f5f5f5",color:"#888",whiteSpace:"nowrap"}}>{r.created_at?fmtDate(r.created_at):"—"}</td>
+                  <td style={{padding:"10px 14px",fontSize:12,borderBottom:"1px solid #f5f5f5"}}>{r.created_by||"—"}</td>
+                  <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}>
+                    <span style={{padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:700,background:stColor+"18",color:stColor,whiteSpace:"nowrap"}}>{stLabel}</span>
+                  </td>
+                  <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",whiteSpace:"nowrap",textAlign:"right"}}>
+                    {!r.completed&&<button onClick={()=>complete(r.id)} title="Mark done" style={{padding:"5px 9px",background:"#27ae60",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,marginRight:4}}>✓</button>}
+                    <button onClick={()=>openEdit(r)} title="Edit" style={{padding:"5px 9px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,marginRight:4}}>✏️</button>
+                    <button onClick={()=>del(r.id)} title="Delete" style={{padding:"5px 9px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>🗑</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {modal&&(
+        <Modal title={editId?"Edit Reminder":"Create Reminder"} onClose={closeModal}>
+          <Field label="Customer" value={form.customer_name} onChange={v=>setForm(p=>({...p,customer_name:v,equipment_id:"",work_order_id:""}))} options={["",...customers.map(c=>c.name)]} required/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <div style={{marginBottom:14}}>
+              <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Equipment (optional)</label>
+              <select value={form.equipment_id} onChange={e=>setForm(p=>({...p,equipment_id:e.target.value}))} disabled={!form.customer_name} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>
+                <option value="">— None —</option>
+                {equipForCustomer.map(e=>{const lbl=`${e.year||""} ${e.make||""} ${e.model||e.type||""}`.trim()+(e.unit_number?` · #${e.unit_number}`:"")+(e.vin?` · ${e.vin}`:""); return <option key={e.id} value={String(e.id)}>{lbl||`Equipment ${e.id}`}</option>;})}
+              </select>
+            </div>
+            <div style={{marginBottom:14}}>
+              <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Work Order (optional)</label>
+              <select value={form.work_order_id} onChange={e=>setForm(p=>({...p,work_order_id:e.target.value}))} disabled={!form.customer_name} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>
+                <option value="">— None —</option>
+                {wosForCustomer.map(w=><option key={w.id} value={w.id}>{w.id}{w.unit_number?` · Unit ${w.unit_number}`:""}</option>)}
+              </select>
             </div>
           </div>
-        ))}
-      </div>
+          <Field label="Due date" value={form.reminder_date} onChange={v=>setForm(p=>({...p,reminder_date:v}))} type="date"/>
+          <Field label="Note" value={form.note} onChange={v=>setForm(p=>({...p,note:v}))} type="textarea" required placeholder="e.g. DOT inspection due, call for oil change..."/>
+          <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
+            <button onClick={closeModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
+            <button onClick={save} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Create"}</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
