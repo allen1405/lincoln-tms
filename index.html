@@ -1276,13 +1276,20 @@ const Customers = () => {
   const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
   const [equipTarget,setEquipTarget]=useState(null);
   const [editId,setEditId]=useState(null);
-  const EMPTY={name:"",address:"",phone:"",email:"",notes:""};
+  const EMPTY={name:"",address:"",phone:"",email:"",notes:"",mc_number:"",dot_number:""};
   const [form,setForm]=useState(EMPTY);
+  const [paidByCustomer,setPaidByCustomer]=useState({});
   const load=async()=>{const{data}=await sb.from('customers').select('*').order('created_at',{ascending:false});setList(data||[]);setLoading(false);};
-  useEffect(()=>{load();},[]);
-  const filtered=list.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.email.toLowerCase().includes(search.toLowerCase()));
+  const loadPaid=async()=>{
+    const{data}=await sb.from('work_orders').select('customer').eq('status','Paid').eq('is_voided',false);
+    const map={};(data||[]).forEach(w=>{map[w.customer]=(map[w.customer]||0)+1;});
+    setPaidByCustomer(map);
+  };
+  useEffect(()=>{load();loadPaid();},[]);
+  const q=search.toLowerCase();
+  const filtered=list.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.email||"").toLowerCase().includes(q)||(c.mc_number||"").toLowerCase().includes(q)||(c.dot_number||"").toLowerCase().includes(q));
   const openAdd=()=>{setForm(EMPTY);setEditId(null);setModal(true);};
-  const openEdit=(c)=>{setForm({name:c.name||"",address:c.address||"",phone:c.phone||"",email:c.email||"",notes:c.notes||""});setEditId(c.id);setModal(true);};
+  const openEdit=(c)=>{setForm({name:c.name||"",address:c.address||"",phone:c.phone||"",email:c.email||"",notes:c.notes||"",mc_number:c.mc_number||"",dot_number:c.dot_number||""});setEditId(c.id);setModal(true);};
   const closeModal=()=>{setModal(false);setEditId(null);setForm(EMPTY);};
   const save=async()=>{
     if(!form.name)return;
@@ -1318,8 +1325,12 @@ const Customers = () => {
           <div key={c.id} style={{border:"1px solid #eee",borderRadius:10,padding:16,marginBottom:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>{c.name}</div>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4,flexWrap:"wrap"}}>
+                  <div style={{fontWeight:700,fontSize:15}}>{c.name}</div>
+                  {(paidByCustomer[c.name]||0)>0&&<span style={{background:"#eafaf1",color:"#1e8449",border:"1px solid #a9dfbf",padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:700}}>✅ {paidByCustomer[c.name]} job{paidByCustomer[c.name]===1?"":"s"} completed</span>}
+                </div>
                 <div style={{fontSize:13,color:"#666",marginBottom:4}}>{c.address}</div>
+                {(c.mc_number||c.dot_number)&&<div style={{fontSize:12,color:"#555",marginBottom:6,fontFamily:"monospace"}}>{c.mc_number&&<span><strong>MC#</strong> {c.mc_number}</span>}{c.mc_number&&c.dot_number&&<span style={{color:"#bbb"}}> &nbsp;·&nbsp; </span>}{c.dot_number&&<span><strong>DOT#</strong> {c.dot_number}</span>}</div>}
                 {c.notes&&<div style={{fontSize:12,color:"#888",marginBottom:6}}><strong>Notes:</strong> {c.notes}</div>}
                 <div style={{fontSize:13,color:"#555"}}>📞 {c.phone} &nbsp; ✉️ {c.email}</div>
               </div>
@@ -1340,6 +1351,8 @@ const Customers = () => {
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <Field label="Phone" value={form.phone} onChange={v=>setForm(p=>({...p,phone:v}))}/>
             <Field label="Email" value={form.email} onChange={v=>setForm(p=>({...p,email:v}))} type="email"/>
+            <Field label="MC #" value={form.mc_number} onChange={v=>setForm(p=>({...p,mc_number:v}))} placeholder="e.g. 123456"/>
+            <Field label="DOT #" value={form.dot_number} onChange={v=>setForm(p=>({...p,dot_number:v}))} placeholder="e.g. 7654321"/>
           </div>
           <Field label="Notes" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} type="textarea"/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
