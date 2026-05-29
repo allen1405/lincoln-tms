@@ -25,6 +25,12 @@ const {createClient} = supabase;
 const sb = createClient('https://paytgvlfkqpyyxoqvaqn.supabase.co','sb_publishable_8U6IiUfM6Q9QaJ5tP0uhMQ_cN-rUNrv');
 const EQUIP_TYPES = ["Truck","Trailer","Camper","Van","Pickup","Other"];
 const WO_STATUSES = ["Waiting list","Check-in","Inspection","In progress","Waiting for parts","Done","Waiting on payment","Paid"];
+const PART_STATUSES_ORDERED = ["Pending Order","Ordered","On Stock"]; // low → high; aggregate = lowest seen
+const aggregatePartsStatus = parts => {
+  if (!parts || parts.length === 0) return null;
+  for (const s of PART_STATUSES_ORDERED) if (parts.some(p => p.status === s)) return s;
+  return null;
+};
 const {useState,useEffect,useContext,createContext} = React;
 const UserCtx = createContext(null);
 
@@ -458,6 +464,10 @@ const WorkOrders = () => {
   const user = useContext(UserCtx);
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
   const [jobLabor,setJobLabor]=useState({}); // work_order_id → summed job labor hours (real labor; w.labor column is unused here)
+  const [jobsByWo,setJobsByWo]=useState({});
+  const [partsByWo,setPartsByWo]=useState({});
+  const [notesByWo,setNotesByWo]=useState({}); // work_order_id → count
+  const [statusFilter,setStatusFilter]=useState(null); // null = kanban view; status string = list-detail
   const [customers,setCustomers]=useState([]);
   const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
   const [view,setView]=useState("active"); // active | voided
@@ -482,13 +492,18 @@ const WorkOrders = () => {
   const [mechanics,setMechanics]=useState([]);
 
   const loadWos=async()=>{
-    const [wr,jr]=await Promise.all([
+    const [wr,jr,pr,nr]=await Promise.all([
       sb.from('work_orders').select('*').order('created_at',{ascending:false}),
-      sb.from('jobs').select('work_order_id,labor')
+      sb.from('jobs').select('*'),
+      sb.from('parts').select('*'),
+      sb.from('notes').select('id,work_order_id')
     ]);
-    const map={};
-    (jr.data||[]).forEach(j=>{map[j.work_order_id]=(map[j.work_order_id]||0)+Number(j.labor||0);});
-    setJobLabor(map); setWos(wr.data||[]); setLoading(false);
+    const labor={},jM={},pM={},nM={};
+    (jr.data||[]).forEach(j=>{labor[j.work_order_id]=(labor[j.work_order_id]||0)+Number(j.labor||0);(jM[j.work_order_id]=jM[j.work_order_id]||[]).push(j);});
+    (pr.data||[]).forEach(p=>{(pM[p.work_order_id]=pM[p.work_order_id]||[]).push(p);});
+    (nr.data||[]).forEach(n=>{nM[n.work_order_id]=(nM[n.work_order_id]||0)+1;});
+    setJobLabor(labor); setJobsByWo(jM); setPartsByWo(pM); setNotesByWo(nM);
+    setWos(wr.data||[]); setLoading(false);
   };
   const loadCustomers=async()=>{const{data}=await sb.from('customers').select('*').order('name',{ascending:true});setCustomers(data||[]);};
   const loadMechanics=async()=>{const{data}=await sb.from('users').select('name').eq('active',true).order('name',{ascending:true});setMechanics((data||[]).map(u=>u.name));};
@@ -496,6 +511,8 @@ const WorkOrders = () => {
   useEffect(()=>{loadWos();loadCustomers();loadMechanics();},[]);
 
   const filtered=wos.filter(w=>w.id.toLowerCase().includes(search.toLowerCase())||w.customer.toLowerCase().includes(search.toLowerCase())||w.unit_number.toLowerCase().includes(search.toLowerCase()));
+  const jobStatusColor=s=>({"Pending":"#2980b9","In progress":"#8e44ad","Waiting for parts":"#ca6f1e","Done":"#27ae60"})[s]||"#888";
+  const partStatusColor=s=>({"Pending Order":"#ca6f1e","Ordered":"#2980b9","On Stock":"#27ae60"})[s]||"#888";
   // Suggested next WO number from highest existing (user can override the field).
   const nextWoId=()=>{
     const max=wos.reduce((m,w)=>{const n=parseInt(String(w.id).replace(/\D/g,""),10);return isNaN(n)?m:Math.max(m,n);},0);
@@ -746,10 +763,26 @@ const WorkOrders = () => {
         <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Work Orders</h1>
         <Btn label="Add new order" onClick={openAdd} color="#c0392b"/>
       </div>
-      <div style={{display:"flex",gap:6,marginBottom:16,borderBottom:"2px solid #f0f0f0"}}>
-        {[["active","Active",wos.filter(w=>!w.is_voided).length],["voided","🚫 Voided",wos.filter(w=>w.is_voided).length]].map(([k,l,n])=>(
-          <button key={k} onClick={()=>setView(k)} style={{padding:"10px 18px",background:"none",border:"none",cursor:"pointer",fontSize:14,fontWeight:view===k?700:500,color:view===k?"#c0392b":"#888",borderBottom:view===k?"2px solid #c0392b":"2px solid transparent",marginBottom:-2}}>{l} <span style={{fontSize:11,color:"#aaa",fontWeight:400}}>({n})</span></button>
-        ))}
+      <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:16,borderBottom:"2px solid #f0f0f0"}}>
+        <div style={{display:"flex",gap:6}}>
+          {[["active","Active",wos.filter(w=>!w.is_voided).length],["voided","🚫 Voided",wos.filter(w=>w.is_voided).length]].map(([k,l,n])=>(
+            <button key={k} onClick={()=>setView(k)} style={{padding:"10px 18px",background:"none",border:"none",cursor:"pointer",fontSize:14,fontWeight:view===k?700:500,color:view===k?"#c0392b":"#888",borderBottom:view===k?"2px solid #c0392b":"2px solid transparent",marginBottom:-2}}>{l} <span style={{fontSize:11,color:"#aaa",fontWeight:400}}>({n})</span></button>
+          ))}
+        </div>
+        {view==="active"&&<div style={{width:1,height:22,background:"#e5e5e5",alignSelf:"center"}}/>}
+        {view==="active"&&<div style={{display:"flex",gap:6,overflowX:"auto",flex:1,paddingBottom:8,marginBottom:-2}}>
+          {WO_STATUSES.map(s=>{
+            const count=wos.filter(w=>!w.is_voided&&w.status===s).length;
+            const sel=statusFilter===s;
+            return (
+              <button key={s} onClick={()=>setStatusFilter(sel?null:s)} title={sel?"Click to clear filter":"Filter to "+s} style={{display:"flex",alignItems:"center",gap:6,whiteSpace:"nowrap",padding:"6px 12px",borderRadius:20,border:"1px solid "+(sel?"#c0392b":"#e0e0e0"),background:sel?"#c0392b":"#fff",color:sel?"#fff":"#555",cursor:"pointer",fontSize:12,fontWeight:600}}>
+                <span>{s}</span>
+                <span style={{fontSize:10,opacity:0.85,fontWeight:500}}>{count}</span>
+                {sel&&<span style={{marginLeft:2,fontSize:14,lineHeight:1,fontWeight:700}}>×</span>}
+              </button>
+            );
+          })}
+        </div>}
       </div>
       <div style={{position:"relative",marginBottom:20,maxWidth:320}}>
         <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"#aaa"}}>🔍</span>
@@ -775,7 +808,7 @@ const WorkOrders = () => {
           </table>
         </div>
       )}
-      {view==="active"&&<div style={{display:"flex",gap:12,overflowX:"auto",paddingBottom:12}}>
+      {view==="active"&&statusFilter===null&&<div style={{display:"flex",gap:12,overflowX:"auto",paddingBottom:12}}>
         {WO_STATUSES.map(col=>{
           const cards=filtered.filter(w=>w.status===col&&!w.is_voided);
           return (
@@ -806,6 +839,66 @@ const WorkOrders = () => {
           );
         })}
       </div>}
+      {view==="active"&&statusFilter!==null&&(()=>{
+        const list=filtered.filter(w=>w.status===statusFilter&&!w.is_voided);
+        if(list.length===0) return <div style={{padding:40,textAlign:"center",color:"#aaa",background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>No work orders in "{statusFilter}".</div>;
+        return <div>{list.map(w=>{
+          const jobs=jobsByWo[w.id]||[];
+          const parts=partsByWo[w.id]||[];
+          const noteCount=notesByWo[w.id]||0;
+          const agg=aggregatePartsStatus(parts);
+          return (
+            <div key={w.id} style={{display:"grid",gridTemplateColumns:"240px 1fr",gap:12,marginBottom:10,alignItems:"stretch"}}>
+              <div style={{background:"#fff",borderRadius:10,padding:12,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                  <span onClick={()=>openJobs(w)} style={{fontWeight:700,fontSize:12,color:"#c0392b",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted"}} title="Click to open details (jobs, parts, notes, DOT)">{w.id}</span>
+                  <div style={{display:"flex",gap:4}}>
+                    <button onClick={()=>openEdit(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13}} title="Edit work order">✏️</button>
+                    <button onClick={()=>del(w.id)} style={{background:"#fdecea",border:"none",borderRadius:6,padding:"2px 6px",cursor:"pointer",color:"#c0392b",fontSize:13}} title="Delete WO">🗑</button>
+                  </div>
+                </div>
+                {w.is_road_call&&<div style={{display:"inline-block",background:"#c0392b",color:"#fff",fontSize:9,fontWeight:800,letterSpacing:0.5,padding:"2px 6px",borderRadius:4,marginBottom:4}}>🚨 ROAD CALL</div>}
+                <div style={{fontWeight:600,fontSize:13,marginBottom:2}}>{w.customer}</div>
+                <div style={{fontSize:12,color:"#666",marginBottom:2}}>🚛 {w.unit_number}</div>
+                <div style={{fontSize:11,color:"#888",marginBottom:4}}>{w.description}</div>
+                <div style={{fontSize:11,color:"#aaa",marginBottom:4}}>👨‍🔧 {w.mechanic||"Unassigned"}</div>
+                <div style={{fontSize:11,fontWeight:600,color:"#27ae60",marginBottom:6}}>Labor: {jobLabor[w.id]||0}h · Parts: ${w.parts}</div>
+                <select value={w.status} onChange={e=>upd(w.id,e.target.value)} style={{width:"100%",padding:"4px 8px",border:"1px solid #eee",borderRadius:6,fontSize:11,cursor:"pointer"}}>
+                  {WO_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div style={{background:"#fff",borderRadius:10,padding:14,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"grid",gridTemplateColumns:"1fr 1.2fr 1.4fr",gap:16}}>
+                <div>
+                  <div style={{fontSize:10,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}}>Customer</div>
+                  <div style={{fontSize:13,fontWeight:600,marginBottom:6}}>{w.customer}</div>
+                  <div style={{fontSize:11,color:"#888"}}>📝 {noteCount} note{noteCount===1?"":"s"}</div>
+                </div>
+                <div>
+                  <div style={{fontSize:10,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}}>🔧 Jobs ({jobs.length})</div>
+                  {jobs.length===0?<div style={{fontSize:11,color:"#bbb"}}>No jobs yet</div>:jobs.map(j=>(
+                    <div key={j.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,padding:"2px 0",gap:6}}>
+                      <span style={{color:"#333",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{j.name}</span>
+                      <span style={{padding:"1px 6px",borderRadius:10,fontSize:9,fontWeight:700,background:jobStatusColor(j.status)+"18",color:jobStatusColor(j.status),whiteSpace:"nowrap"}}>{j.status}</span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div style={{fontSize:10,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:4,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                    <span>🔩 Parts ({parts.length})</span>
+                    {agg&&<span style={{padding:"1px 7px",borderRadius:10,fontSize:9,fontWeight:700,background:partStatusColor(agg)+"22",color:partStatusColor(agg)}}>{agg}</span>}
+                  </div>
+                  {parts.length===0?<div style={{fontSize:11,color:"#bbb"}}>No parts yet</div>:parts.map(p=>(
+                    <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,padding:"2px 0",gap:6}}>
+                      <span style={{color:"#333",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                      <span style={{padding:"1px 6px",borderRadius:10,fontSize:9,fontWeight:700,background:partStatusColor(p.status)+"18",color:partStatusColor(p.status),whiteSpace:"nowrap"}}>{p.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}</div>;
+      })()}
 
       {modal&&(
         <Modal title={editId?`Edit Work Order — ${editId}`:"New Work Order"} onClose={closeWoModal}>
