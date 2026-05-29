@@ -322,7 +322,9 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const user = useContext(UserCtx);
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [adding,setAdding]=useState(false);
-  const [form,setForm]=useState({type:"Truck",unit_number:"",year:"",make:"",model:"",vin:"",license_plate:"",notes:""});
+  const [editEqId,setEditEqId]=useState(null);
+  const EQ_EMPTY={type:"Truck",unit_number:"",year:"",make:"",model:"",vin:"",license_plate:"",notes:""};
+  const [form,setForm]=useState(EQ_EMPTY);
   const [viewEquip,setViewEquip]=useState(null);
   const [remForm,setRemForm]=useState({note:"",reminder_date:"",auto_days:""});
   const [addingRem,setAddingRem]=useState(false);
@@ -339,11 +341,23 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   };
   useEffect(()=>{load();},[]);
 
+  const openAddEq=()=>{setForm(EQ_EMPTY);setEditEqId(null);setAdding(true);};
+  const openEditEq=(e)=>{setForm({type:e.type||"Truck",unit_number:e.unit_number||"",year:e.year||"",make:e.make||"",model:e.model||"",vin:e.vin||"",license_plate:e.license_plate||"",notes:e.notes||""});setEditEqId(e.id);setAdding(true);};
+  const closeEqForm=()=>{setAdding(false);setEditEqId(null);setForm(EQ_EMPTY);};
   const save=async()=>{
     if(!form.type) return;
-    const {data:inserted}=await sb.from('equipment').insert([{...form,customer_id:customerId,customer_name:customerName}]).select().single();
-    audit(user,"create","equipment",inserted?.id,`${customerName} — ${form.type} ${form.year} ${form.make} ${form.model}`.trim(),[form.unit_number&&`Unit #${form.unit_number}`,form.vin&&`VIN: ${form.vin}`].filter(Boolean).join(", "));
-    setAdding(false); setForm({type:"Truck",unit_number:"",year:"",make:"",model:"",vin:"",license_plate:"",notes:""}); load();
+    const summary=`${customerName} — ${form.type} ${form.year} ${form.make} ${form.model}`.trim();
+    const details=[form.unit_number&&`Unit #${form.unit_number}`,form.vin&&`VIN: ${form.vin}`].filter(Boolean).join(", ");
+    if(editEqId){
+      const res=await sb.from('equipment').update({...form,customer_name:customerName}).eq('id',editEqId);
+      if(res.error){alert("Could not save: "+res.error.message);return;}
+      audit(user,"update","equipment",editEqId,summary,details);
+    }else{
+      const {data:inserted,error}=await sb.from('equipment').insert([{...form,customer_id:customerId,customer_name:customerName}]).select().single();
+      if(error){alert("Could not save: "+error.message);return;}
+      audit(user,"create","equipment",inserted?.id,summary,details);
+    }
+    closeEqForm(); load();
   };
   const del=async(id)=>{
     if(!confirm("Delete this equipment?"))return;
@@ -418,9 +432,10 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
 
   return (
     <Modal title={`Equipment — ${customerName}`} onClose={onClose}>
-      {!adding&&<button onClick={()=>setAdding(true)} style={{marginBottom:16,padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>+ Add Equipment</button>}
+      {!adding&&<button onClick={openAddEq} style={{marginBottom:16,padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>+ Add Equipment</button>}
       {adding&&(
         <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:10}}>{editEqId?"Edit equipment":"Add equipment"}</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <Field label="Type" value={form.type} onChange={v=>setForm(p=>({...p,type:v}))} options={EQUIP_TYPES}/>
             <Field label="Unit Number" value={form.unit_number} onChange={v=>setForm(p=>({...p,unit_number:v}))} placeholder="e.g. 221"/>
@@ -432,8 +447,8 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
           </div>
           <Field label="Notes" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} type="textarea"/>
           <div style={{display:"flex",gap:8}}>
-            <button onClick={save} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Save Equipment</button>
-            <button onClick={()=>setAdding(false)} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
+            <button onClick={save} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{editEqId?"Save Changes":"Save Equipment"}</button>
+            <button onClick={closeEqForm} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
           </div>
         </div>
       )}
@@ -450,6 +465,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
             <div style={{display:"flex",gap:8}}>
               {onSelect&&<button onClick={()=>onSelect(e)} style={{padding:"7px 14px",background:"#27ae60",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>Select</button>}
               <button onClick={()=>openEquip(e)} style={{padding:"7px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>History & Reminders</button>
+              <button onClick={()=>openEditEq(e)} style={{padding:"7px 12px",background:"#3498db",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}} title="Edit equipment">✏️</button>
               <button onClick={()=>del(e.id)} style={{padding:"7px 10px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer"}}>🗑</button>
             </div>
           </div>
@@ -473,7 +489,7 @@ const WorkOrders = () => {
   const [view,setView]=useState("active"); // active | voided
   const [newCustModal,setNewCustModal]=useState(false);
   const [equipModal,setEquipModal]=useState(null);
-  const [newCust,setNewCust]=useState({name:"",address:"",phone:"",email:"",notes:""});
+  const [newCust,setNewCust]=useState({name:"",address:"",phone:"",email:"",notes:"",mc_number:"",dot_number:""});
   const [notesModal,setNotesModal]=useState(null);
   const [notesList,setNotesList]=useState([]); const [noteText,setNoteText]=useState("");
   const [jobsModal,setJobsModal]=useState(null);
@@ -575,7 +591,7 @@ const WorkOrders = () => {
     audit(user,"create","customer",inserted?.id,newCust.name);
     await loadCustomers();
     setForm(p=>({...p,customer:newCust.name}));
-    setNewCust({name:"",address:"",phone:"",email:"",notes:""});
+    setNewCust({name:"",address:"",phone:"",email:"",notes:"",mc_number:"",dot_number:""});
     setNewCustModal(false);
   };
   const upd=async(id,status)=>{
@@ -988,6 +1004,8 @@ const WorkOrders = () => {
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <Field label="Phone" value={newCust.phone} onChange={v=>setNewCust(p=>({...p,phone:v}))}/>
             <Field label="Email" value={newCust.email} onChange={v=>setNewCust(p=>({...p,email:v}))} type="email"/>
+            <Field label="MC #" value={newCust.mc_number} onChange={v=>setNewCust(p=>({...p,mc_number:v}))} placeholder="e.g. 123456"/>
+            <Field label="DOT #" value={newCust.dot_number} onChange={v=>setNewCust(p=>({...p,dot_number:v}))} placeholder="e.g. 7654321"/>
           </div>
           <Field label="Notes" value={newCust.notes} onChange={v=>setNewCust(p=>({...p,notes:v}))} type="textarea"/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
