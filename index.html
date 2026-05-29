@@ -250,7 +250,7 @@ const Dashboard = ({onNav}) => {
   const [wos,setWos]=useState([]); const [custs,setCusts]=useState([]); const [reminders,setReminders]=useState([]); const [loading,setLoading]=useState(true);
   useEffect(()=>{
     Promise.all([
-      sb.from('work_orders').select('*').order('created_at',{ascending:false}),
+      sb.from('work_orders').select('*').neq('is_voided',true).order('created_at',{ascending:false}),
       sb.from('customers').select('*'),
       sb.from('reminders').select('*').eq('completed',false).lte('reminder_date',new Date().toISOString().split('T')[0])
     ]).then(([w,c,r])=>{setWos(w.data||[]);setCusts(c.data||[]);setReminders(r.data||[]);setLoading(false);});
@@ -460,6 +460,7 @@ const WorkOrders = () => {
   const [jobLabor,setJobLabor]=useState({}); // work_order_id → summed job labor hours (real labor; w.labor column is unused here)
   const [customers,setCustomers]=useState([]);
   const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
+  const [view,setView]=useState("active"); // active | voided
   const [newCustModal,setNewCustModal]=useState(false);
   const [equipModal,setEquipModal]=useState(null);
   const [newCust,setNewCust]=useState({name:"",address:"",phone:"",email:"",notes:""});
@@ -498,7 +499,8 @@ const WorkOrders = () => {
   // Suggested next WO number from highest existing (user can override the field).
   const nextWoId=()=>{
     const max=wos.reduce((m,w)=>{const n=parseInt(String(w.id).replace(/\D/g,""),10);return isNaN(n)?m:Math.max(m,n);},0);
-    return `WO-${String(max+1).padStart(3,"0")}`;
+    const n=Math.max(max+1,2145); // floor at the paper-record number
+    return `WO-${n<1000?String(n).padStart(3,"0"):n}`;
   };
   const numOrNull=v=>(v===""||v==null)?null:Number(v);
   const woValid=(id)=>{
@@ -530,6 +532,23 @@ const WorkOrders = () => {
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
     audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[id!==editId&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
+  };
+  const voidWo=async(id,fromModal)=>{
+    if(!confirm(`Void ${id}? It will move to the Voided bucket but can be restored later.`))return;
+    const prev=wos.find(w=>w.id===id);
+    const res=await sb.from('work_orders').update({is_voided:true,voided_at:new Date().toISOString(),voided_by:user.name}).eq('id',id);
+    if(res.error){alert("Could not void: "+res.error.message);return;}
+    audit(user,"update","work_order",id,`${id} — ${prev?.customer||""}`,`voided (was ${prev?.status||"—"})`);
+    if(fromModal) closeWoModal();
+    loadWos();
+  };
+  const restoreWo=async(id,fromModal)=>{
+    const prev=wos.find(w=>w.id===id);
+    const res=await sb.from('work_orders').update({is_voided:false,voided_at:null,voided_by:null}).eq('id',id);
+    if(res.error){alert("Could not restore: "+res.error.message);return;}
+    audit(user,"update","work_order",id,`${id} — ${prev?.customer||""}`,"restored from voided");
+    if(fromModal) closeWoModal();
+    loadWos();
   };
   const addCustomer=async()=>{
     if(!newCust.name) return;
@@ -723,17 +742,42 @@ const WorkOrders = () => {
   if(loading) return <Loading/>;
   return (
     <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
         <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Work Orders</h1>
         <Btn label="Add new order" onClick={openAdd} color="#c0392b"/>
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:16,borderBottom:"2px solid #f0f0f0"}}>
+        {[["active","Active",wos.filter(w=>!w.is_voided).length],["voided","🚫 Voided",wos.filter(w=>w.is_voided).length]].map(([k,l,n])=>(
+          <button key={k} onClick={()=>setView(k)} style={{padding:"10px 18px",background:"none",border:"none",cursor:"pointer",fontSize:14,fontWeight:view===k?700:500,color:view===k?"#c0392b":"#888",borderBottom:view===k?"2px solid #c0392b":"2px solid transparent",marginBottom:-2}}>{l} <span style={{fontSize:11,color:"#aaa",fontWeight:400}}>({n})</span></button>
+        ))}
       </div>
       <div style={{position:"relative",marginBottom:20,maxWidth:320}}>
         <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"#aaa"}}>🔍</span>
         <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search work orders..." style={{width:"100%",padding:"10px 12px 10px 36px",border:"1px solid #ddd",borderRadius:8,fontSize:14}}/>
       </div>
-      <div style={{display:"flex",gap:12,overflowX:"auto",paddingBottom:12}}>
+      {view==="voided"&&(
+        <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr><TH c="WO #"/><TH c="Customer"/><TH c="Unit"/><TH c="Status when voided"/><TH c="Voided at"/><TH c="By"/><TH c=""/></tr></thead>
+            <tbody>{(()=>{const vl=filtered.filter(w=>w.is_voided).sort((a,b)=>String(b.voided_at||"").localeCompare(String(a.voided_at||""))); if(vl.length===0) return <tr><td colSpan={7} style={{textAlign:"center",padding:40,color:"#aaa"}}>No voided work orders.</td></tr>; return vl.map((w,i)=>(
+              <tr key={w.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
+                <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:700,color:"#c0392b"}}><span onClick={()=>openEdit(w)} style={{cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted"}} title="Click to view/edit">{w.id}</span></td>
+                <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.customer}</td>
+                <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.unit_number}</td>
+                <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}><Badge s={w.status}/></td>
+                <td style={{padding:"10px 14px",fontSize:12,borderBottom:"1px solid #f5f5f5",color:"#555"}}>{w.voided_at?fmtDate(w.voided_at):"—"}</td>
+                <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.voided_by||"—"}</td>
+                <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",textAlign:"right"}}>
+                  <button onClick={()=>restoreWo(w.id,false)} style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>↺ Restore</button>
+                </td>
+              </tr>
+            ));})()}</tbody>
+          </table>
+        </div>
+      )}
+      {view==="active"&&<div style={{display:"flex",gap:12,overflowX:"auto",paddingBottom:12}}>
         {WO_STATUSES.map(col=>{
-          const cards=filtered.filter(w=>w.status===col);
+          const cards=filtered.filter(w=>w.status===col&&!w.is_voided);
           return (
             <div key={col} style={{minWidth:200,flex:1,background:col==="Done"||col==="Paid"?"#f0faf4":"#f8f9fa",borderRadius:12,padding:12}}>
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}><Badge s={col}/><span style={{fontSize:12,color:"#888"}}>{cards.length}</span></div>
@@ -761,7 +805,7 @@ const WorkOrders = () => {
             </div>
           );
         })}
-      </div>
+      </div>}
 
       {modal&&(
         <Modal title={editId?`Edit Work Order — ${editId}`:"New Work Order"} onClose={closeWoModal}>
@@ -805,9 +849,20 @@ const WorkOrders = () => {
             <input type="checkbox" checked={!!form.is_road_call} onChange={e=>setForm(p=>({...p,is_road_call:e.target.checked}))} style={{width:16,height:16,cursor:"pointer",accentColor:"#c0392b"}}/>
             🚨 Road call
           </label>
-          <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:8}}>
-            <button onClick={closeWoModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-            <button onClick={editId?saveEdit:add} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Create WO"}</button>
+          <div style={{display:"flex",justifyContent:"space-between",gap:10,marginTop:8,alignItems:"center"}}>
+            <div>
+              {editId&&(()=>{
+                const w=wos.find(x=>x.id===editId);
+                if(!w) return null;
+                if(w.is_voided) return <button onClick={()=>restoreWo(editId,true)} style={{padding:"10px 18px",background:"#27ae60",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>↺ Restore from voided</button>;
+                if(!["Done","Paid"].includes(w.status)) return <button onClick={()=>voidWo(editId,true)} style={{padding:"10px 18px",background:"#fff",color:"#c0392b",border:"1px solid #c0392b",borderRadius:8,cursor:"pointer",fontWeight:600}}>🚫 Void WO</button>;
+                return null;
+              })()}
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={closeWoModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
+              <button onClick={editId?saveEdit:add} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Create WO"}</button>
+            </div>
           </div>
         </Modal>
       )}
@@ -1427,7 +1482,7 @@ const Settings = () => {
 // ─── SALARIES ────────────────────────────────────────────────────────────────
 const Salaries = () => {
   const [wos,setWos]=useState([]); const [users,setUsers]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{Promise.all([sb.from('work_orders').select('*'),sb.from('users').select('*').eq('active',true)]).then(([w,u])=>{setWos(w.data||[]);setUsers(u.data||[]);setLoading(false);});},[]);
+  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').neq('is_voided',true),sb.from('users').select('*').eq('active',true)]).then(([w,u])=>{setWos(w.data||[]);setUsers(u.data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
   return (
     <div>
@@ -1456,7 +1511,7 @@ const Salaries = () => {
 // ─── REPORTS / INVOICES / ESTIMATES ──────────────────────────────────────────
 const Reports = () => {
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{sb.from('work_orders').select('*').then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
+  useEffect(()=>{sb.from('work_orders').select('*').neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
   const labor=wos.reduce((s,w)=>s+Number(w.labor),0); const parts=wos.reduce((s,w)=>s+Number(w.parts),0);
   return (
@@ -1483,7 +1538,7 @@ const Reports = () => {
 };
 const Invoices = () => {
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{sb.from('work_orders').select('*').eq('status','Done').then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
+  useEffect(()=>{sb.from('work_orders').select('*').eq('status','Done').neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
   return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Invoices</h1><Btn label="Create" onClick={()=>{}} color="#c0392b"/></div>
     <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
@@ -1502,7 +1557,7 @@ const Invoices = () => {
 };
 const Estimates = () => {
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{sb.from('work_orders').select('*').in('status',['Waiting list','Inspection']).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
+  useEffect(()=>{sb.from('work_orders').select('*').in('status',['Waiting list','Inspection']).neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
   return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1><Btn label="Create" onClick={()=>{}} color="#c0392b"/></div>
     <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
