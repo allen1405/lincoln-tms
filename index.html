@@ -56,6 +56,8 @@ const aggregatePartsStatus = parts => {
 };
 const {useState,useEffect,useContext,createContext} = React;
 const UserCtx = createContext(null);
+// Carries whether the page is rendering inside mechanic "Shop view" trimmed mode.
+const ModeCtx = createContext({mode:"full", shopActive:false});
 
 // ─── VIEWPORT ─────────────────────────────────────────────────────────────────
 // Drives all responsive layout: desktop ≥1100, tablet landscape 900-1099, mobile <900.
@@ -400,6 +402,8 @@ const Sidebar = ({active,onNav,user,onLogout,nav = NAV}) => (
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 const Dashboard = ({onNav}) => {
   const user = useContext(UserCtx);
+  const {shopActive} = useContext(ModeCtx);
+  const vp = useViewport();
   const [wos,setWos]=useState([]); const [custs,setCusts]=useState([]); const [reminders,setReminders]=useState([]); const [loading,setLoading]=useState(true);
   useEffect(()=>{
     Promise.all([
@@ -411,11 +415,28 @@ const Dashboard = ({onNav}) => {
   if(loading) return <Loading/>;
   const revenue=wos.reduce((s,w)=>s+Number(w.labor)+Number(w.parts),0);
   const linkStyle={color:"#c0392b",fontSize:13,fontWeight:600,cursor:"pointer",textDecoration:"none",background:"none",border:"none",padding:0};
+  // Mechanic "My WOs" tiles vs full dashboard tiles.
+  const myName=(user?.name||"").toLowerCase();
+  const myWos=wos.filter(w=>(w.mechanic||"").toLowerCase()===myName);
+  const tiles=shopActive
+    ? [
+        {l:"My open WOs",v:myWos.filter(w=>!["Done","Paid"].includes(w.status)).length,i:"🔧",c:"#3498db",page:"workorders"},
+        {l:"In progress",v:myWos.filter(w=>w.status==="In progress").length,i:"⚙️",c:"#8e44ad",page:"workorders"},
+        {l:"Waiting for parts",v:myWos.filter(w=>w.status==="Waiting for parts").length,i:"🔩",c:"#ca6f1e",page:"workorders"},
+        {l:"Overdue reminders",v:reminders.length,i:"⚠️",c:"#c0392b",page:"reminders"}
+      ]
+    : [
+        {l:"Active WOs",v:wos.filter(w=>w.status!=="Done").length,i:"🔧",c:"#3498db",page:"workorders"},
+        {l:"In Progress",v:wos.filter(w=>w.status==="In progress").length,i:"⚙️",c:"#8e44ad",page:"workorders"},
+        {l:"Customers",v:custs.length,i:"👥",c:"#27ae60",page:"customers"},
+        {l:"Revenue",v:`$${revenue.toLocaleString()}`,i:"💰",c:"#e67e22",page:"reports"}
+      ];
+  const cols=vp.width<600?"repeat(2,1fr)":vp.width<900?"repeat(2,1fr)":"repeat(4,1fr)";
   return (
     <div>
-      <div style={{marginBottom:24}}><h1 style={{margin:"0 0 4px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Dashboard</h1><p style={{margin:0,color:"#888"}}>Good day, {user.name.split(" ")[0]}! 👋</p></div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:16,marginBottom:24}}>
-        {[{l:"Active WOs",v:wos.filter(w=>w.status!=="Done").length,i:"🔧",c:"#3498db",page:"workorders"},{l:"In Progress",v:wos.filter(w=>w.status==="In progress").length,i:"⚙️",c:"#8e44ad",page:"workorders"},{l:"Customers",v:custs.length,i:"👥",c:"#27ae60",page:"customers"},{l:"Revenue",v:`$${revenue.toLocaleString()}`,i:"💰",c:"#e67e22",page:"reports"}].map(s=>(
+      <div style={{marginBottom:24}}><h1 style={{margin:"0 0 4px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>{shopActive?"My Work":"Dashboard"}</h1><p style={{margin:0,color:"#888"}}>Good day, {user.name.split(" ")[0]}! 👋</p></div>
+      <div style={{display:"grid",gridTemplateColumns:cols,gap:16,marginBottom:24}}>
+        {tiles.map(s=>(
           <div key={s.l} onClick={()=>onNav(s.page)} style={{background:"#fff",borderRadius:12,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",cursor:"pointer",transition:"box-shadow 0.2s"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 20px rgba(0,0,0,0.12)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="0 2px 12px rgba(0,0,0,0.06)"}>
             <div style={{display:"flex",justifyContent:"space-between"}}>
               <div><div style={{fontSize:26,fontWeight:800,color:"#1a1a2e"}}>{s.v}</div><div style={{fontSize:12,color:"#888",marginTop:4}}>{s.l}</div></div>
@@ -625,6 +646,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
 // ─── WORK ORDERS ─────────────────────────────────────────────────────────────
 const WorkOrders = () => {
   const user = useContext(UserCtx);
+  const {shopActive} = useContext(ModeCtx);
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
   const [jobLabor,setJobLabor]=useState({}); // work_order_id → summed job labor hours (real labor; w.labor column is unused here)
   const [jobsByWo,setJobsByWo]=useState({});
@@ -677,7 +699,11 @@ const WorkOrders = () => {
   const loadNotes=async(woId)=>{const{data}=await sb.from('notes').select('*').eq('work_order_id',woId).order('created_at',{ascending:true});setNotesList(data||[]);};
   useEffect(()=>{loadWos();loadCustomers();loadMechanics();},[]);
 
-  const filtered=wos.filter(w=>w.id.toLowerCase().includes(search.toLowerCase())||w.customer.toLowerCase().includes(search.toLowerCase())||w.unit_number.toLowerCase().includes(search.toLowerCase()));
+  const myName=(user?.name||"").toLowerCase();
+  const filtered=wos.filter(w=>{
+    if(shopActive && (w.mechanic||"").toLowerCase()!==myName) return false;
+    return w.id.toLowerCase().includes(search.toLowerCase())||w.customer.toLowerCase().includes(search.toLowerCase())||w.unit_number.toLowerCase().includes(search.toLowerCase());
+  });
   const jobStatusColor=s=>({"Pending":"#2980b9","In progress":"#8e44ad","Waiting for parts":"#ca6f1e","Done":"#27ae60"})[s]||"#888";
   const partStatusColor=s=>({"Pending Order":"#ca6f1e","Ordered":"#2980b9","On Stock":"#27ae60"})[s]||"#888";
   // Suggested next WO number from highest existing (user can override the field).
@@ -960,6 +986,10 @@ const WorkOrders = () => {
         <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Work Orders</h1>
         <Btn label="Add new order" onClick={openAdd} color="#c0392b"/>
       </div>
+      {shopActive&&<div style={{background:"#fff4e6",border:"1px solid #f9d8a1",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:"#7a4c10",display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:14}}>🔧</span>
+        <span>Showing work orders assigned to <strong>{user.name}</strong>. Switch to 🖥 Full view to see all.</span>
+      </div>}
       <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:16,borderBottom:"2px solid #f0f0f0"}}>
         <div style={{display:"flex",gap:6}}>
           {[["active","Active",wos.filter(w=>!w.is_voided).length],["voided","🚫 Voided",wos.filter(w=>w.is_voided).length]].map(([k,l,n])=>(
@@ -2378,7 +2408,7 @@ const App = () => {
   const sidebarWidth = vp.isDesktop ? 230 : vp.isTabletLandscape ? 64 : 0;
   const mainPadding = vp.isMobile ? 12 : vp.isTabletLandscape ? 16 : 28;
   return (
-    <UserCtx.Provider value={user}>
+    <UserCtx.Provider value={user}><ModeCtx.Provider value={{mode,shopActive}}>
       <div style={{display:"flex",minHeight:"100vh",background:"#f4f6f9"}}>
         {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
         {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
@@ -2388,7 +2418,7 @@ const App = () => {
         </main>
         {vp.isMobile && <BottomNav active={page} onNav={setPage} nav={activeNav}/>}
       </div>
-    </UserCtx.Provider>
+    </ModeCtx.Provider></UserCtx.Provider>
   );
 };
 ReactDOM.render(<App/>, document.getElementById('root'));
