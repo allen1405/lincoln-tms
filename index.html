@@ -34,6 +34,20 @@ const aggregatePartsStatus = parts => {
 const {useState,useEffect,useContext,createContext} = React;
 const UserCtx = createContext(null);
 
+// ─── VIEWPORT ─────────────────────────────────────────────────────────────────
+// Drives all responsive layout: desktop ≥1100, tablet landscape 900-1099, mobile <900.
+const useViewport = () => {
+  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 1400);
+  useEffect(() => {
+    const on = () => setW(window.innerWidth);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return { width: w, isMobile: w < 900, isTabletLandscape: w >= 900 && w < 1100, isDesktop: w >= 1100 };
+};
+// Pick a value by viewport tier. responsive(desktop, tabletLandscape, mobile). tabletLandscape/mobile fall back to desktop if not provided.
+const responsive = (vp, d, tl, m) => vp.isMobile ? (m ?? tl ?? d) : vp.isTabletLandscape ? (tl ?? d) : d;
+
 // ─── AUDIT LOG HELPER ─────────────────────────────────────────────────────────
 // Fire-and-forget. Called from every write site. user can be null for system actions.
 const audit = (user, action, entity_type, entity_id, entity_label, details = "") => {
@@ -150,17 +164,27 @@ const Loading = () => <div style={{padding:60,textAlign:"center",color:"#888",fo
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
 const fmtDay = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
 
-const Modal = ({title,onClose,children,wide}) => (
-  <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-    <div style={{background:"#fff",borderRadius:12,width:wide?"min(800px,98vw)":"min(600px,95vw)",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"20px 24px",borderBottom:"1px solid #eee",position:"sticky",top:0,background:"#fff",zIndex:1}}>
-        <h3 style={{margin:0,fontSize:18,fontWeight:700}}>{title}</h3>
-        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:22,color:"#666"}}>×</button>
+const Modal = ({title,onClose,children,wide}) => {
+  const vp = useViewport();
+  const fullSheet = vp.width < 700; // mobile/portrait: take full screen
+  const containerStyle = fullSheet
+    ? {background:"#fff",width:"100vw",height:"100vh",maxHeight:"100vh",overflow:"auto",borderRadius:0,boxShadow:"none"}
+    : {background:"#fff",borderRadius:12,width:wide?"min(800px,98vw)":"min(600px,95vw)",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"};
+  const overlayStyle = fullSheet
+    ? {position:"fixed",inset:0,zIndex:1000}
+    : {position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16};
+  return (
+    <div style={overlayStyle}>
+      <div style={containerStyle}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:fullSheet?"14px 16px":"20px 24px",borderBottom:"1px solid #eee",position:"sticky",top:0,background:"#fff",zIndex:1}}>
+          <h3 style={{margin:0,fontSize:fullSheet?16:18,fontWeight:700}}>{title}</h3>
+          <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:fullSheet?28:22,color:"#666",padding:fullSheet?"4px 8px":0,minWidth:fullSheet?44:"auto",minHeight:fullSheet?44:"auto"}}>×</button>
+        </div>
+        <div style={{padding:fullSheet?16:24}}>{children}</div>
       </div>
-      <div style={{padding:24}}>{children}</div>
     </div>
-  </div>
-);
+  );
+};
 const Field = ({label,value,onChange,type="text",options,required,placeholder}) => (
   <div style={{marginBottom:14}}>
     <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>{label}{required&&<span style={{color:"#c0392b"}}> *</span>}</label>
@@ -302,21 +326,21 @@ const Login = ({onLogin}) => {
 
 // ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 const NAV = [
-  {id:"dashboard",label:"Dashboard",icon:"📊",s:"MENU"},
-  {id:"workorders",label:"Work Orders",icon:"🔧",s:"MENU"},
+  {id:"dashboard",label:"Dashboard",icon:"📊",s:"MENU",shop:true},
+  {id:"workorders",label:"Work Orders",icon:"🔧",s:"MENU",shop:true},
   {id:"customers",label:"Customers",icon:"👥",s:"MENU"},
   {id:"appointments",label:"Appointments",icon:"📅",s:"MENU"},
-  {id:"reminders",label:"Reminders",icon:"🔔",s:"MENU"},
+  {id:"reminders",label:"Reminders",icon:"🔔",s:"MENU",shop:true},
   {id:"employees",label:"Employees",icon:"👤",s:"MENU"},
   {id:"salaries",label:"Salaries",icon:"💰",s:"MENU"},
-  {id:"inventory",label:"Inventory",icon:"📦",s:"SUPPORT"},
+  {id:"inventory",label:"Inventory",icon:"📦",s:"SUPPORT",shop:true},
   {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT"},
   {id:"invoices",label:"Invoices",icon:"🧾",s:"SUPPORT"},
   {id:"estimates",label:"Estimates",icon:"📋",s:"SUPPORT"},
   {id:"auditlog",label:"Audit Log",icon:"🛡️",s:"SUPPORT"},
   {id:"settings",label:"Settings",icon:"⚙️",s:"SUPPORT"},
 ];
-const Sidebar = ({active,onNav,user,onLogout}) => (
+const Sidebar = ({active,onNav,user,onLogout,nav = NAV}) => (
   <div style={{width:230,background:"#1a1a2e",display:"flex",flexDirection:"column",height:"100vh",position:"fixed",left:0,top:0,zIndex:100}}>
     <div style={{padding:"20px 20px 16px",borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -325,16 +349,20 @@ const Sidebar = ({active,onNav,user,onLogout}) => (
       </div>
     </div>
     <div style={{flex:1,overflowY:"auto",padding:"12px 0"}}>
-      {["MENU","SUPPORT"].map(sec=>(
+      {["MENU","SUPPORT"].map(sec=>{
+        const items=nav.filter(n=>n.s===sec);
+        if(items.length===0) return null;
+        return (
         <div key={sec}>
           <div style={{padding:"8px 20px 4px",fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.3)",letterSpacing:1.5}}>{sec}</div>
-          {NAV.filter(n=>n.s===sec).map(item=>(
+          {items.map(item=>(
             <button key={item.id} onClick={()=>onNav(item.id)} style={{display:"flex",alignItems:"center",gap:10,width:"100%",padding:"10px 20px",background:active===item.id?"rgba(192,57,43,0.2)":"none",border:"none",color:active===item.id?"#e74c3c":"rgba(255,255,255,0.6)",cursor:"pointer",textAlign:"left",fontSize:13,fontWeight:active===item.id?600:400,borderLeft:active===item.id?"3px solid #e74c3c":"3px solid transparent"}}>
               <span>{item.icon}</span>{item.label}
             </button>
           ))}
         </div>
-      ))}
+        );
+      })}
     </div>
     <div style={{padding:"16px 20px",borderTop:"1px solid rgba(255,255,255,0.08)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
@@ -2213,9 +2241,77 @@ const AuditLog = () => {
 };
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
+// Tablet-landscape rail: 64px wide, icons only.
+const IconRail = ({active,onNav,user,onLogout,nav}) => (
+  <div style={{width:64,background:"#1a1a2e",display:"flex",flexDirection:"column",height:"100vh",position:"fixed",left:0,top:0,zIndex:100,alignItems:"center",paddingBottom:8}}>
+    <div style={{padding:"14px 0 10px",borderBottom:"1px solid rgba(255,255,255,0.08)",width:"100%",display:"flex",justifyContent:"center"}}>
+      <div style={{width:38,height:38,background:"linear-gradient(135deg,#c0392b,#e74c3c)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🚛</div>
+    </div>
+    <div style={{flex:1,overflowY:"auto",width:"100%",padding:"8px 0",display:"flex",flexDirection:"column",gap:2,alignItems:"center"}}>
+      {nav.map(item=>(
+        <button key={item.id} onClick={()=>onNav(item.id)} title={item.label} style={{width:48,height:48,border:"none",borderRadius:10,background:active===item.id?"rgba(192,57,43,0.25)":"none",color:active===item.id?"#e74c3c":"rgba(255,255,255,0.7)",cursor:"pointer",fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          {item.icon}
+        </button>
+      ))}
+    </div>
+    <button onClick={onLogout} title="Logout" style={{width:48,height:48,border:"none",borderRadius:10,background:"rgba(255,255,255,0.06)",color:"rgba(255,255,255,0.6)",cursor:"pointer",fontSize:16,margin:"6px 0"}}>⬅</button>
+    <div title={user.name} style={{width:38,height:38,background:"linear-gradient(135deg,#e74c3c,#c0392b)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:14}}>{user.name.charAt(0)}</div>
+  </div>
+);
+
+// Mobile/portrait bottom nav: 5 items max, +More drawer for the rest.
+const BottomNav = ({active,onNav,nav}) => {
+  const [moreOpen,setMoreOpen]=useState(false);
+  const primary = nav.slice(0,4);
+  const overflow = nav.slice(4);
+  const visible = [...primary];
+  if (overflow.length > 0) visible.push({id:"__more",label:"More",icon:"⋯"});
+  return (
+    <>
+      {moreOpen && <div onClick={()=>setMoreOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:99}}/>}
+      {moreOpen && <div style={{position:"fixed",bottom:64,left:0,right:0,background:"#fff",borderTopLeftRadius:16,borderTopRightRadius:16,boxShadow:"0 -8px 30px rgba(0,0,0,0.2)",zIndex:101,padding:"12px 8px 16px",maxHeight:"60vh",overflowY:"auto"}}>
+        <div style={{width:42,height:4,background:"#e0e0e0",borderRadius:2,margin:"0 auto 12px"}}/>
+        {overflow.map(item=>(
+          <button key={item.id} onClick={()=>{setMoreOpen(false);onNav(item.id);}} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px 16px",background:active===item.id?"#fef0ee":"#fff",border:"none",color:active===item.id?"#c0392b":"#1a1a2e",cursor:"pointer",fontSize:15,fontWeight:600,borderRadius:8}}>
+            <span style={{fontSize:22}}>{item.icon}</span>{item.label}
+          </button>
+        ))}
+      </div>}
+      <div style={{position:"fixed",bottom:0,left:0,right:0,height:64,background:"#fff",borderTop:"1px solid #e5e5e5",display:"flex",zIndex:100,boxShadow:"0 -4px 20px rgba(0,0,0,0.06)"}}>
+        {visible.map(item=>(
+          <button key={item.id} onClick={()=>item.id==="__more"?setMoreOpen(o=>!o):onNav(item.id)} style={{flex:1,border:"none",background:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:"6px 4px",color:active===item.id?"#c0392b":"#666"}}>
+            <span style={{fontSize:22}}>{item.icon}</span>
+            <span style={{fontSize:10,fontWeight:active===item.id?700:500}}>{item.label}</span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+};
+
+// Top-of-content bar shown only in tablet/mobile. Shop/Full toggle for mechanics, current page name.
+const TopBar = ({pageLabel,mode,onToggleMode,canToggle}) => (
+  <div style={{position:"sticky",top:0,zIndex:50,background:"#fff",borderBottom:"1px solid #ececec",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+    <div style={{fontWeight:800,fontSize:16,color:"#1a1a2e"}}>{pageLabel}</div>
+    {canToggle && <button onClick={onToggleMode} style={{padding:"7px 12px",background:mode==="shop"?"#c0392b":"#fff",color:mode==="shop"?"#fff":"#c0392b",border:"1px solid #c0392b",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:700}}>{mode==="shop"?"🔧 Shop view":"🖥 Full view"}</button>}
+  </div>
+);
+
 const App = () => {
   const [user,setUser]=useState(null);
   const [page,setPage]=useState("dashboard");
+  // mode: shop (mechanic-style trimmed nav) vs full. Mechanics on tablets default to shop; everyone else defaults to full.
+  const [mode,setMode]=useState("shop");
+  const vp = useViewport();
+  const isMech = user?.role === "mechanic";
+  const shopActive = !!user && isMech && mode === "shop" && !vp.isDesktop;
+  const activeNav = shopActive ? NAV.filter(n=>n.shop) : NAV;
+  // Guard: if mechanic flips to shop view while on a hidden page, drop back to a shop-visible one.
+  // Must be declared before any early return to keep hook order stable.
+  useEffect(()=>{
+    if(shopActive && !activeNav.some(n=>n.id===page)) setPage(activeNav[0]?.id || "workorders");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[shopActive]);
   if(!user) return <Login onLogin={setUser}/>;
   const pages = {
     dashboard:<Dashboard onNav={setPage}/>,workorders:<WorkOrders/>,customers:<Customers/>,
@@ -2223,11 +2319,20 @@ const App = () => {
     salaries:<Salaries/>,inventory:<Inventory/>,reports:<Reports/>,
     invoices:<Invoices/>,estimates:<Estimates/>,auditlog:<AuditLog/>,settings:<Settings/>,
   };
+  const canToggleMode = isMech && !vp.isDesktop;
+  const currentNav = activeNav.find(n=>n.id===page);
+  const sidebarWidth = vp.isDesktop ? 230 : vp.isTabletLandscape ? 64 : 0;
+  const mainPadding = vp.isMobile ? 12 : vp.isTabletLandscape ? 16 : 28;
   return (
     <UserCtx.Provider value={user}>
       <div style={{display:"flex",minHeight:"100vh",background:"#f4f6f9"}}>
-        <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)}/>
-        <main style={{marginLeft:230,flex:1,padding:28,minHeight:"100vh"}}>{pages[page]||pages.dashboard}</main>
+        {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
+        {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
+        <main style={{marginLeft:sidebarWidth,flex:1,padding:mainPadding,minHeight:"100vh",paddingBottom:vp.isMobile?80:mainPadding}}>
+          {!vp.isDesktop && <TopBar pageLabel={currentNav?.label||"TMS"} mode={mode} onToggleMode={()=>setMode(m=>m==="shop"?"full":"shop")} canToggle={canToggleMode}/>}
+          <div style={{padding:vp.isMobile?12:0}}>{pages[page]||pages.dashboard}</div>
+        </main>
+        {vp.isMobile && <BottomNav active={page} onNav={setPage} nav={activeNav}/>}
       </div>
     </UserCtx.Provider>
   );
