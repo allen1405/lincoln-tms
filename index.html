@@ -16,6 +16,29 @@ input:focus, select:focus, textarea:focus { border-color: #c0392b !important; ou
 .tab-btn { padding: 10px 20px; background: none; border: none; cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -2px; }
 .tab-btn.active { font-weight: 700; color: #c0392b; border-bottom-color: #c0392b; }
 .tab-btn:not(.active) { color: #888; }
+
+/* Mobile / tablet touch-target tuning. Applies under 1100px so it covers tablets and phones. */
+@media (max-width: 1099px) {
+  /* Bump inputs/selects/textareas to a comfortable 44px tap target. */
+  input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="date"], input[type="search"], input[type="tel"], select, textarea {
+    min-height: 44px;
+    font-size: 15px !important;
+  }
+  textarea { min-height: 72px; }
+  /* Every button gets enough vertical clearance — the existing padding usually places it around 32–38px. */
+  button { min-height: 40px; }
+  /* The tab bar inside detail modals needs to scroll horizontally instead of wrapping. */
+  .tab-btn { padding: 12px 14px; font-size: 13px; flex-shrink: 0; }
+}
+@media (max-width: 700px) {
+  /* On true mobile / tablet portrait, push to the 44px minimum and bump base text. */
+  body { font-size: 15px; }
+  input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="date"], input[type="search"], input[type="tel"], select { min-height: 46px; }
+  button { min-height: 44px; }
+  h1 { font-size: 22px !important; }
+  /* Allow tab bar to scroll horizontally on small screens. */
+  .tab-btn { padding: 12px 12px; font-size: 13px; }
+}
 </style>
 </head>
 <body>
@@ -508,7 +531,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
 
   if(viewEquip) return (
     <Modal title={`${label(viewEquip)} — ${viewEquip.vin||'No VIN'}`} onClose={()=>setViewEquip(null)} wide>
-      <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20}}>
+      <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20,overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
         <button className={`tab-btn${activeTab==="history"?" active":""}`} onClick={()=>setActiveTab("history")}>🔧 Repair History</button>
         <button className={`tab-btn${activeTab==="reminders"?" active":""}`} onClick={()=>setActiveTab("reminders")}>🔔 Reminders ({reminders.filter(r=>!r.completed).length})</button>
       </div>
@@ -986,7 +1009,7 @@ const WorkOrders = () => {
         {WO_STATUSES.map(col=>{
           const cards=filtered.filter(w=>w.status===col&&!w.is_voided);
           return (
-            <div key={col} style={{minWidth:200,flex:1,background:col==="Done"||col==="Paid"?"#f0faf4":"#f8f9fa",borderRadius:12,padding:12}}>
+            <div key={col} style={{minWidth:260,flex:1,background:col==="Done"||col==="Paid"?"#f0faf4":"#f8f9fa",borderRadius:12,padding:12}}>
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}><Badge s={col}/><span style={{fontSize:12,color:"#888"}}>{cards.length}</span></div>
               {cards.length===0?<div style={{textAlign:"center",color:"#ccc",fontSize:13,padding:"20px 0"}}>Empty</div>
               :cards.map(w=>(
@@ -1158,7 +1181,7 @@ const WorkOrders = () => {
 
       {jobsModal&&(
         <Modal title={`${jobsModal.id} — ${jobsModal.customer} (${jobsModal.unit_number})`} onClose={()=>{setJobsModal(null);setNoteText("");loadWos();}} wide>
-          <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20}}>
+          <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20,overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
             <button className={`tab-btn${jobTab==="jobs"?" active":""}`} onClick={()=>setJobTab("jobs")}>🔧 Jobs ({jobsList.length}) · {jobsList.reduce((s,j)=>s+Number(j.labor||0),0)}h</button>
             <button className={`tab-btn${jobTab==="parts"?" active":""}`} onClick={()=>setJobTab("parts")}>🔩 Parts ({partsList.length})</button>
             <button className={`tab-btn${jobTab==="supply"?" active":""}`} onClick={()=>setJobTab("supply")}>🧴 Shop Supply</button>
@@ -1756,6 +1779,7 @@ const Appointments = () => {
 // ─── REMINDERS PAGE ───────────────────────────────────────────────────────────
 const RemindersPage = () => {
   const user = useContext(UserCtx);
+  const vp = useViewport();
   const [list,setList]=useState([]);
   const [customers,setCustomers]=useState([]);
   const [equipment,setEquipment]=useState([]);
@@ -1858,6 +1882,35 @@ const RemindersPage = () => {
         ))}
         {sortBy&&<button onClick={()=>setSortBy(null)} style={{padding:"7px 14px",background:"#fff",color:"#c0392b",border:"1px solid #c0392b",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:600}}>↺ Reset sort</button>}
       </div>
+      {vp.width<900?(
+        <div>
+          {sorted.length===0?<div style={{padding:30,textAlign:"center",color:"#aaa",background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>No reminders.</div>:sorted.map(r=>{
+            const st=statusOf(r);
+            const stColor=st==="completed"?"#27ae60":st==="overdue"?"#c0392b":"#d4ac0d";
+            const stLabel=st==="completed"?"Completed":st==="overdue"?"Overdue":"Pending";
+            const source=r.work_order_id?`WO ${r.work_order_id}`:(r.equipment_label||"");
+            return (
+              <div key={r.id} style={{background:"#fff",borderRadius:12,padding:14,marginBottom:10,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",border:`1px solid ${st==="overdue"?"#f5c6cb":"#eee"}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:6}}>
+                  <div style={{fontWeight:700,fontSize:14}}>{r.customer_name}</div>
+                  <span style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,background:stColor+"18",color:stColor,whiteSpace:"nowrap"}}>{stLabel}</span>
+                </div>
+                <div style={{fontSize:14,color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":"",marginBottom:6}}>{r.note}</div>
+                <div style={{fontSize:12,color:"#888",marginBottom:10,display:"flex",flexWrap:"wrap",gap:8}}>
+                  {source&&<span>📋 {source}</span>}
+                  {r.reminder_date&&<span>📅 Due {fmtDay(r.reminder_date)}</span>}
+                  <span>👤 {r.created_by||"—"}</span>
+                </div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {!r.completed&&<button onClick={()=>complete(r.id)} style={{flex:1,padding:"9px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,minHeight:44}}>✓ Done</button>}
+                  <button onClick={()=>openEdit(r)} style={{flex:1,padding:"9px 12px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,minHeight:44}}>✏️ Edit</button>
+                  <button onClick={()=>del(r.id)} style={{flex:0,padding:"9px 14px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:8,cursor:"pointer",fontSize:14,minHeight:44}}>🗑</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ):(
       <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
         <table style={{width:"100%",borderCollapse:"collapse",minWidth:900}}>
           <thead><tr>
@@ -1898,6 +1951,7 @@ const RemindersPage = () => {
           </tbody>
         </table>
       </div>
+      )}
       {modal&&(
         <Modal title={editId?"Edit Reminder":"Create Reminder"} onClose={closeModal}>
           <Field label="Customer" value={form.customer_name} onChange={v=>setForm(p=>({...p,customer_name:v,equipment_id:"",work_order_id:""}))} options={["",...customers.map(c=>c.name)]} required/>
