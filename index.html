@@ -48,7 +48,7 @@ const audit = (user, action, entity_type, entity_id, entity_label, details = "")
   }]).then(r => { if (r.error) console.error('audit:', r.error); });
 };
 const AUDIT_ACTIONS = ["create","update","delete","status_change"];
-const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply","dot_inspection"];
+const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply","dot_inspection","photo"];
 
 // ─── DOT ANNUAL INSPECTION ────────────────────────────────────────────────────
 const SHOP = {name:"Lincoln Truck & Trailer Repair", address:"5940 Colfax Avenue, Lincoln, Nebraska"};
@@ -169,6 +169,102 @@ const Field = ({label,value,onChange,type="text",options,required,placeholder}) 
     : <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||""} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14}}/>}
   </div>
 );
+// ─── PHOTOS ───────────────────────────────────────────────────────────────────
+// Client-side resize to keep storage + bandwidth reasonable. Returns a Blob.
+const resizePhoto = (file, maxWidth = 1600, quality = 0.85) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxWidth / img.width);
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('canvas toBlob failed')), 'image/jpeg', quality);
+    };
+    img.onerror = () => reject(new Error('image load failed'));
+    img.src = e.target.result;
+  };
+  reader.onerror = () => reject(new Error('file read failed'));
+  reader.readAsDataURL(file);
+});
+
+// Reusable photo grid + uploader. Drop wherever an entity needs photos.
+const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = false}) => {
+  const user = useContext(UserCtx);
+  const [photos, setPhotos] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [lightbox, setLightbox] = useState(null);
+  const inputRef = React.useRef(null);
+
+  const load = async () => {
+    if (!entityId) { setPhotos([]); return; }
+    const {data} = await sb.from('photos').select('*').eq('entity_type', entityType).eq('entity_id', String(entityId)).order('created_at', {ascending: false});
+    setPhotos(data || []);
+  };
+  useEffect(() => { load(); }, [entityType, entityId]);
+
+  const handleFiles = async (fileList) => {
+    if (!fileList || fileList.length === 0 || !entityId) return;
+    setUploading(true);
+    try {
+      for (const file of fileList) {
+        if (!file.type.startsWith('image/')) continue;
+        const blob = await resizePhoto(file);
+        const ts = Date.now();
+        const safeName = (file.name || 'photo.jpg').replace(/[^a-zA-Z0-9._-]/g, '_').slice(-60);
+        const path = `${entityType}/${entityId}/${ts}-${safeName}`;
+        const up = await sb.storage.from('tms-photos').upload(path, blob, {contentType: 'image/jpeg', upsert: false});
+        if (up.error) { alert("Upload failed: " + up.error.message); continue; }
+        const pub = sb.storage.from('tms-photos').getPublicUrl(path).data.publicUrl;
+        await sb.from('photos').insert([{entity_type: entityType, entity_id: String(entityId), storage_path: path, public_url: pub, uploaded_by: user?.name || ""}]);
+        audit(user, "create", "photo", null, `${entityType} ${entityId}`, safeName);
+      }
+      await load();
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const del = async (p) => {
+    if (!confirm("Delete this photo?")) return;
+    await sb.storage.from('tms-photos').remove([p.storage_path]);
+    await sb.from('photos').delete().eq('id', p.id);
+    audit(user, "delete", "photo", p.id, `${entityType} ${entityId}`);
+    load();
+  };
+
+  const tile = compact ? 56 : 96;
+  return (
+    <div>
+      {!compact && <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div style={{fontSize:13,fontWeight:700,color:"#555"}}>{label} ({photos.length})</div>
+        <button onClick={() => inputRef.current?.click()} disabled={uploading||!entityId} style={{padding:"8px 14px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:uploading?"wait":"pointer",fontWeight:600,fontSize:13,opacity:uploading||!entityId?0.6:1}}>{uploading?"Uploading...":"📷 Add Photo"}</button>
+      </div>}
+      <input ref={inputRef} type="file" accept="image/*" capture="environment" multiple onChange={e=>handleFiles(e.target.files)} style={{display:"none"}}/>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        {photos.map(p => (
+          <div key={p.id} style={{position:"relative",width:tile,height:tile,borderRadius:8,overflow:"hidden",background:"#f0f0f0",border:"1px solid #e0e0e0"}}>
+            <img src={p.public_url} alt={p.caption||""} onClick={()=>setLightbox(p)} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer",display:"block"}}/>
+            <button onClick={()=>del(p)} title="Delete" style={{position:"absolute",top:2,right:2,width:20,height:20,padding:0,background:"rgba(192,57,43,0.92)",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontSize:11,lineHeight:1}}>×</button>
+          </div>
+        ))}
+        {compact && <button onClick={()=>inputRef.current?.click()} disabled={uploading||!entityId} title="Add photo" style={{width:tile,height:tile,border:"1px dashed #c0392b",background:"#fff",color:"#c0392b",borderRadius:8,cursor:uploading?"wait":"pointer",fontSize:20,opacity:uploading||!entityId?0.5:1}}>{uploading?"…":"📷"}</button>}
+        {!compact && photos.length===0 && <div style={{fontSize:12,color:"#aaa",padding:"10px 0"}}>No photos yet.</div>}
+      </div>
+      {lightbox && (
+        <div onClick={()=>setLightbox(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,cursor:"zoom-out"}}>
+          <img src={lightbox.public_url} alt={lightbox.caption||""} style={{maxWidth:"95vw",maxHeight:"95vh",objectFit:"contain",boxShadow:"0 20px 60px rgba(0,0,0,0.6)"}}/>
+          <button onClick={e=>{e.stopPropagation();setLightbox(null);}} style={{position:"absolute",top:16,right:16,width:40,height:40,background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:20,cursor:"pointer",fontSize:22}}>×</button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const Btn = ({label,onClick,color="#1a1a2e",icon="+"}) => (
   <button onClick={onClick} style={{display:"flex",alignItems:"center",gap:6,padding:"10px 18px",background:color,color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontWeight:600,whiteSpace:"nowrap"}}>
     <span>{icon}</span>{label}
@@ -1041,6 +1137,7 @@ const WorkOrders = () => {
             <button className={`tab-btn${jobTab==="notes"?" active":""}`} onClick={()=>{setJobTab("notes");loadNotes(jobsModal.id);}}>📝 Notes ({notesList.length})</button>
             <button className={`tab-btn${jobTab==="dot"?" active":""}`} onClick={()=>setJobTab("dot")}>🛡️ DOT Inspection</button>
             <button className={`tab-btn${jobTab==="reminders"?" active":""}`} onClick={()=>setJobTab("reminders")}>🔔 Reminders ({woReminders.length})</button>
+            <button className={`tab-btn${jobTab==="photos"?" active":""}`} onClick={()=>setJobTab("photos")}>📷 Photos</button>
           </div>
           {jobTab==="jobs"&&(
             <div>
@@ -1332,6 +1429,11 @@ const WorkOrders = () => {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+          {jobTab==="photos"&&(
+            <div>
+              <PhotoSection entityType="work_order" entityId={jobsModal.id}/>
             </div>
           )}
         </Modal>
