@@ -637,6 +637,9 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
               <button onClick={()=>del(e.id)} style={{padding:"7px 10px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer"}}>🗑</button>
             </div>
           </div>
+          <div style={{marginTop:10}}>
+            <PhotoSection entityType="equipment" entityId={e.id} compact={true} label="Equipment photos"/>
+          </div>
         </div>
       ))}
     </Modal>
@@ -1290,6 +1293,9 @@ const WorkOrders = () => {
                                   />
                                 </div>
                               </div>
+                              <div style={{marginTop:8}}>
+                                <PhotoSection entityType="job" entityId={j.id} compact={true} label="Job photos"/>
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -1347,6 +1353,9 @@ const WorkOrders = () => {
                       {p.status==="Ordered"&&(
                         <input type="date" defaultValue={p.eta_delivery||""} onBlur={e=>updPart(p.id,"eta_delivery",e.target.value||null)} style={{padding:"4px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:11}}/>
                       )}
+                    </div>
+                    <div style={{marginTop:8}}>
+                      <PhotoSection entityType="part" entityId={p.id} compact={true} label="Part photos"/>
                     </div>
                   </div>
                 );
@@ -1671,6 +1680,9 @@ const Customers = () => {
                 <button onClick={()=>openEdit(c)} style={{padding:"8px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>✏️ Edit</button>
                 <button onClick={()=>del(c.id)} style={{padding:"8px 12px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer"}}>🗑</button>
               </div>
+            </div>
+            <div style={{marginTop:10}}>
+              <PhotoSection entityType="customer" entityId={c.id} compact={true} label="Customer photos"/>
             </div>
           </div>
         ))}
