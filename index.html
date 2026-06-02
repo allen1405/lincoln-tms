@@ -10,6 +10,10 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
+/* Reserve scrollbar space at all times so the viewport width doesn't change when content
+   becomes scrollable mid-navigation. Together with hysteresis in useViewport this kills
+   tier flicker on tablets that sit near the 1280 CSS px threshold. */
+html { scrollbar-gutter: stable; }
 body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f6f9; }
 ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
 input:focus, select:focus, textarea:focus { border-color: #c0392b !important; outline: none; box-shadow: 0 0 0 3px rgba(192,57,43,0.1); }
@@ -60,20 +64,40 @@ const UserCtx = createContext(null);
 const ModeCtx = createContext({mode:"full", shopActive:false});
 
 // ─── VIEWPORT ─────────────────────────────────────────────────────────────────
-// Drives all responsive layout: desktop ≥1280, tablet landscape 900-1279, mobile <900.
-// 1280 picked deliberately so Samsung tablets (typically 1100-1340 CSS px in landscape)
-// land solidly in tablet-landscape mode instead of flipping across the threshold when
-// the address bar collapses or a scrollbar appears.
+// Tiers: mobile <900, tablet 900-1279, desktop ≥1280.
+// Two anti-flicker measures:
+//   1. matchMedia-based detection (more stable than window.innerWidth; not affected by
+//      Android Chrome's address-bar viewport tweaks the same way).
+//   2. Hysteresis (40 CSS px buffer): once committed to a tier, the width has to clearly
+//      exceed the next boundary before we switch. Stops Samsung tablets that sit right
+//      at 1280 CSS px from flipping back and forth on navigation.
 const useViewport = () => {
-  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 1400);
+  const measure = () => typeof window === "undefined" ? 1400 : window.innerWidth;
+  const initialTier = () => {
+    const w = measure();
+    return { tier: w < 900 ? "mobile" : w < 1280 ? "tablet" : "desktop", width: w };
+  };
+  const [state, setState] = useState(initialTier);
   useEffect(() => {
-    // Re-measure on mount: Android Chrome can settle the viewport after first paint.
-    setW(window.innerWidth);
+    const BUFFER = 40;
+    const apply = () => {
+      const w = measure();
+      setState(prev => {
+        let tier = prev.tier;
+        // Only leave the current tier if width clearly exceeds the next boundary.
+        if (tier === "mobile" && w >= 900 + BUFFER) tier = "tablet";
+        else if (tier === "tablet" && w < 900 - BUFFER) tier = "mobile";
+        else if (tier === "tablet" && w >= 1280 + BUFFER) tier = "desktop";
+        else if (tier === "desktop" && w < 1280 - BUFFER) tier = "tablet";
+        return { tier, width: w };
+      });
+    };
     let raf = 0;
     const on = () => {
       if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => setW(window.innerWidth));
+      raf = requestAnimationFrame(apply);
     };
+    apply(); // settle after mount
     window.addEventListener("resize", on);
     window.addEventListener("orientationchange", on);
     return () => {
@@ -82,7 +106,12 @@ const useViewport = () => {
       if (raf) cancelAnimationFrame(raf);
     };
   }, []);
-  return { width: w, isMobile: w < 900, isTabletLandscape: w >= 900 && w < 1280, isDesktop: w >= 1280 };
+  return {
+    width: state.width,
+    isMobile: state.tier === "mobile",
+    isTabletLandscape: state.tier === "tablet",
+    isDesktop: state.tier === "desktop"
+  };
 };
 // Pick a value by viewport tier. responsive(desktop, tabletLandscape, mobile). tabletLandscape/mobile fall back to desktop if not provided.
 const responsive = (vp, d, tl, m) => vp.isMobile ? (m ?? tl ?? d) : vp.isTabletLandscape ? (tl ?? d) : d;
