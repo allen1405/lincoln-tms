@@ -17,8 +17,8 @@ input:focus, select:focus, textarea:focus { border-color: #c0392b !important; ou
 .tab-btn.active { font-weight: 700; color: #c0392b; border-bottom-color: #c0392b; }
 .tab-btn:not(.active) { color: #888; }
 
-/* Mobile / tablet touch-target tuning. Applies under 1100px so it covers tablets and phones. */
-@media (max-width: 1099px) {
+/* Mobile / tablet touch-target tuning. Applies under 1280px so it covers tablets and phones, matching the JS breakpoint. */
+@media (max-width: 1279px) {
   /* Bump inputs/selects/textareas to a comfortable 44px tap target. */
   input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="date"], input[type="search"], input[type="tel"], select, textarea {
     min-height: 44px;
@@ -60,15 +60,29 @@ const UserCtx = createContext(null);
 const ModeCtx = createContext({mode:"full", shopActive:false});
 
 // ─── VIEWPORT ─────────────────────────────────────────────────────────────────
-// Drives all responsive layout: desktop ≥1100, tablet landscape 900-1099, mobile <900.
+// Drives all responsive layout: desktop ≥1280, tablet landscape 900-1279, mobile <900.
+// 1280 picked deliberately so Samsung tablets (typically 1100-1340 CSS px in landscape)
+// land solidly in tablet-landscape mode instead of flipping across the threshold when
+// the address bar collapses or a scrollbar appears.
 const useViewport = () => {
   const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 1400);
   useEffect(() => {
-    const on = () => setW(window.innerWidth);
+    // Re-measure on mount: Android Chrome can settle the viewport after first paint.
+    setW(window.innerWidth);
+    let raf = 0;
+    const on = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => setW(window.innerWidth));
+    };
     window.addEventListener("resize", on);
-    return () => window.removeEventListener("resize", on);
+    window.addEventListener("orientationchange", on);
+    return () => {
+      window.removeEventListener("resize", on);
+      window.removeEventListener("orientationchange", on);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, []);
-  return { width: w, isMobile: w < 900, isTabletLandscape: w >= 900 && w < 1100, isDesktop: w >= 1100 };
+  return { width: w, isMobile: w < 900, isTabletLandscape: w >= 900 && w < 1280, isDesktop: w >= 1280 };
 };
 // Pick a value by viewport tier. responsive(desktop, tabletLandscape, mobile). tabletLandscape/mobile fall back to desktop if not provided.
 const responsive = (vp, d, tl, m) => vp.isMobile ? (m ?? tl ?? d) : vp.isTabletLandscape ? (tl ?? d) : d;
