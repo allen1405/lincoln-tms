@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <title>Lincoln Truck & Trailer Repair — Shop TMS</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -2426,7 +2426,7 @@ const BottomNav = ({active,onNav,nav}) => {
           </button>
         ))}
       </div>}
-      <div style={{position:"fixed",bottom:0,left:0,right:0,height:64,background:"#fff",borderTop:"1px solid #e5e5e5",display:"flex",zIndex:100,boxShadow:"0 -4px 20px rgba(0,0,0,0.06)"}}>
+      <div style={{position:"fixed",bottom:0,left:0,right:0,minHeight:64,paddingBottom:"env(safe-area-inset-bottom, 0px)",background:"#fff",borderTop:"1px solid #e5e5e5",display:"flex",zIndex:100,boxShadow:"0 -4px 20px rgba(0,0,0,0.06)"}}>
         {visible.map(item=>(
           <button key={item.id} onClick={()=>item.id==="__more"?setMoreOpen(o=>!o):onNav(item.id)} style={{flex:1,border:"none",background:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:"6px 4px",color:active===item.id?"#c0392b":"#666"}}>
             <span style={{fontSize:22}}>{item.icon}</span>
@@ -2477,11 +2477,19 @@ const App = () => {
       <div style={{display:"flex",minHeight:"100vh",background:"#f4f6f9"}}>
         {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
         {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
-        <main style={{marginLeft:sidebarWidth,flex:1,padding:mainPadding,minHeight:"100vh",paddingBottom:vp.isMobile?80:mainPadding}}>
+        <main style={{marginLeft:sidebarWidth,flex:1,padding:mainPadding,minHeight:"100vh",paddingBottom:vp.isMobile?"calc(80px + env(safe-area-inset-bottom, 0px))":mainPadding}}>
           {!vp.isDesktop && <TopBar pageLabel={currentNav?.label||"TMS"} mode={mode} onToggleMode={()=>setMode(m=>m==="shop"?"full":"shop")} canToggle={canToggleMode}/>}
           <div style={{padding:vp.isMobile?12:0}}>{pages[page]||pages.dashboard}</div>
         </main>
         {vp.isMobile && <BottomNav active={page} onNav={setPage} nav={activeNav}/>}
+        {/* Temporary debug indicator: shows the current viewport tier so we can diagnose
+            the Samsung tab flicker remotely. Remove once stable. Activate by adding
+            ?debug=1 to the URL. */}
+        {typeof window !== "undefined" && window.location.search.includes("debug=1") &&
+          <div style={{position:"fixed",top:6,right:6,zIndex:9999,background:"rgba(0,0,0,0.78)",color:"#fff",padding:"4px 10px",borderRadius:6,fontSize:11,fontFamily:"monospace"}}>
+            {vp.isMobile?"📱 mobile":vp.isTabletLandscape?"📟 tablet":"🖥 desktop"} · {vp.width}px
+          </div>
+        }
       </div>
     </ModeCtx.Provider></UserCtx.Provider>
   );
