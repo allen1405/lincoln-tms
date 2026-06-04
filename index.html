@@ -447,20 +447,22 @@ const Dashboard = ({onNav}) => {
   const user = useContext(UserCtx);
   const {shopActive} = useContext(ModeCtx);
   const vp = useViewport();
-  const [wos,setWos]=useState([]); const [custs,setCusts]=useState([]); const [reminders,setReminders]=useState([]); const [loading,setLoading]=useState(true);
+  const [wos,setWos]=useState([]); const [custs,setCusts]=useState([]); const [reminders,setReminders]=useState([]); const [jobs,setJobs]=useState([]); const [loading,setLoading]=useState(true);
   useEffect(()=>{
     Promise.all([
       sb.from('work_orders').select('*').neq('is_voided',true).order('created_at',{ascending:false}),
       sb.from('customers').select('*'),
-      sb.from('reminders').select('*').eq('completed',false).lte('reminder_date',new Date().toISOString().split('T')[0])
-    ]).then(([w,c,r])=>{setWos(w.data||[]);setCusts(c.data||[]);setReminders(r.data||[]);setLoading(false);});
+      sb.from('reminders').select('*').eq('completed',false).lte('reminder_date',new Date().toISOString().split('T')[0]),
+      sb.from('jobs').select('work_order_id,mechanic')
+    ]).then(([w,c,r,j])=>{setWos(w.data||[]);setCusts(c.data||[]);setReminders(r.data||[]);setJobs(j.data||[]);setLoading(false);});
   },[]);
   if(loading) return <Loading/>;
   const revenue=wos.reduce((s,w)=>s+Number(w.labor)+Number(w.parts),0);
   const linkStyle={color:"#c0392b",fontSize:13,fontWeight:600,cursor:"pointer",textDecoration:"none",background:"none",border:"none",padding:0};
-  // Mechanic "My WOs" tiles vs full dashboard tiles.
+  // Mechanic "My WOs" tiles vs full dashboard tiles. "Mine" = creator OR any assigned job is me.
   const myName=(user?.name||"").toLowerCase();
-  const myWos=wos.filter(w=>(w.mechanic||"").toLowerCase()===myName);
+  const myWoIds=new Set(jobs.filter(j=>(j.mechanic||"").toLowerCase()===myName).map(j=>j.work_order_id));
+  const myWos=wos.filter(w=>(w.mechanic||"").toLowerCase()===myName||myWoIds.has(w.id));
   const tiles=shopActive
     ? [
         {l:"My open WOs",v:myWos.filter(w=>!["Done","Paid"].includes(w.status)).length,i:"🔧",c:"#3498db",page:"workorders"},
@@ -746,8 +748,10 @@ const WorkOrders = () => {
   useEffect(()=>{loadWos();loadCustomers();loadMechanics();},[]);
 
   const myName=(user?.name||"").toLowerCase();
+  // "Mine" in shop view = creator OR any job on this WO is assigned to me.
+  const isMine=w=>(w.mechanic||"").toLowerCase()===myName || (jobsByWo[w.id]||[]).some(j=>(j.mechanic||"").toLowerCase()===myName);
   const filtered=wos.filter(w=>{
-    if(shopActive && (w.mechanic||"").toLowerCase()!==myName) return false;
+    if(shopActive && !isMine(w)) return false;
     return w.id.toLowerCase().includes(search.toLowerCase())||w.customer.toLowerCase().includes(search.toLowerCase())||w.unit_number.toLowerCase().includes(search.toLowerCase());
   });
   const jobStatusColor=s=>({"Pending":"#2980b9","In progress":"#8e44ad","Waiting for parts":"#ca6f1e","Done":"#27ae60"})[s]||"#888";
@@ -765,7 +769,7 @@ const WorkOrders = () => {
     if(!form.customer) missing.push("Customer");
     if(!(form.unit_number||"").trim()) missing.push("Equipment / Unit");
     if(!(form.vin||"").trim()) missing.push("VIN");
-    if(!form.mechanic) missing.push("Mechanic");
+    if(!form.mechanic) missing.push("Created by");
     if(missing.length){setWoErr("Please fill in required field(s): "+missing.join(", "));return false;}
     setWoErr("");return true;
   };
@@ -1034,7 +1038,7 @@ const WorkOrders = () => {
       </div>
       {shopActive&&<div style={{background:"#fff4e6",border:"1px solid #f9d8a1",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:"#7a4c10",display:"flex",alignItems:"center",gap:8}}>
         <span style={{fontSize:14}}>🔧</span>
-        <span>Showing work orders assigned to <strong>{user.name}</strong>. Switch to 🖥 Full view to see all.</span>
+        <span>Showing work orders <strong>{user.name}</strong> created or has a job on. Switch to 🖥 Full view to see all.</span>
       </div>}
       <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:16,borderBottom:"2px solid #f0f0f0"}}>
         <div style={{display:"flex",gap:6}}>
@@ -1101,7 +1105,7 @@ const WorkOrders = () => {
                   <div style={{fontWeight:600,fontSize:13,marginBottom:2}}>{w.customer}</div>
                   <div style={{fontSize:12,color:"#666",marginBottom:2}}>🚛 {w.unit_number}</div>
                   <div style={{fontSize:11,color:"#888",marginBottom:4}}>{w.description}</div>
-                  <div style={{fontSize:11,color:"#aaa",marginBottom:4}}>👨‍🔧 {w.mechanic||"Unassigned"}</div>
+                  <div style={{fontSize:11,color:"#aaa",marginBottom:4}}>👨‍🔧 Created by {w.mechanic||"—"}</div>
                   <div style={{fontSize:11,fontWeight:600,color:"#27ae60",marginBottom:6}}>Labor: {jobLabor[w.id]||0}h · Parts: ${w.parts}</div>
                   <select value={w.status} onChange={e=>upd(w.id,e.target.value)} style={{width:"100%",padding:"4px 8px",border:"1px solid #eee",borderRadius:6,fontSize:11,cursor:"pointer"}}>
                     {WO_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
@@ -1196,7 +1200,7 @@ const WorkOrders = () => {
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <Field label="VIN" value={form.vin} onChange={v=>setForm(p=>({...p,vin:v}))} required/>
-            <Field label="Mechanic" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...mechanics]} required/>
+            <Field label="Created by" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...mechanics]} required/>
             <Field label="Status" value={form.status} onChange={v=>setForm(p=>({...p,status:v}))} options={WO_STATUSES}/>
             <Field label="Date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))} type="date"/>
             <Field label="Labor ($)" value={form.labor} onChange={v=>setForm(p=>({...p,labor:v}))} type="number"/>
@@ -1304,7 +1308,24 @@ const WorkOrders = () => {
                               <button onClick={()=>delJob(j.id)} style={{background:"none",border:"none",cursor:"pointer",color:"#ddd",fontSize:14}}>🗑</button>
                             </div>
                             <div style={{padding:"0 14px 12px",borderTop:"1px dashed #e8e8e8",marginTop:4}}>
-                              <div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:10,marginTop:8}}>
+                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 2fr",gap:10,marginTop:8}}>
+                                <div>
+                                  <div style={{fontSize:11,fontWeight:600,color:"#aaa",marginBottom:4}}>👨‍🔧 MECHANIC</div>
+                                  <select
+                                    value={j.mechanic||""}
+                                    onChange={async e=>{
+                                      const v=e.target.value;
+                                      if(v===(j.mechanic||""))return;
+                                      await sb.from('jobs').update({mechanic:v}).eq('id',j.id);
+                                      audit(user,"update","job",j.id,`${jobsModal.id} — ${j.name}`,`mechanic: "${j.mechanic||"—"}" → "${v||"—"}"`);
+                                      loadJobs(jobsModal.id);
+                                    }}
+                                    style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,background:j.mechanic?"#eef5ff":"#fafafa",fontWeight:600,color:j.mechanic?"#2980b9":"#888"}}
+                                  >
+                                    <option value="">— Unassigned —</option>
+                                    {mechanics.map(m=><option key={m} value={m}>{m}</option>)}
+                                  </select>
+                                </div>
                                 <div>
                                   <div style={{fontSize:11,fontWeight:600,color:"#aaa",marginBottom:4}}>⏱ LABOR (hrs)</div>
                                   <input
