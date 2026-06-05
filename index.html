@@ -712,6 +712,7 @@ const WorkOrders = () => {
   const [jobsModal,setJobsModal]=useState(null);
   const [jobsList,setJobsList]=useState([]); const [jobTab,setJobTab]=useState("jobs");
   const [newJobName,setNewJobName]=useState(""); const [customJob,setCustomJob]=useState("");
+  const [editingJob,setEditingJob]=useState({id:null,name:""});
   const COMMON_JOBS=["Brakes","Oil Change","Tires","Engine Diagnostic","Transmission","Electrical","Suspension","AC/Heating","DOT Inspection","Alignment","Battery","Lights","Exhaust","Coolant","Fuel System"];
   const [partsList,setPartsList]=useState([]);
   const [addingPart,setAddingPart]=useState(false);
@@ -986,8 +987,22 @@ const WorkOrders = () => {
   };
   const delJob=async(id)=>{
     const prev=jobsList.find(j=>j.id===id);
+    if(!confirm(`Delete job "${prev?.name||""}"?`))return;
     await sb.from('jobs').delete().eq('id',id);
     audit(user,"delete","job",id,`${jobsModal.id} — ${prev?.name||""}`);
+    loadJobs(jobsModal.id);
+  };
+  const startEditJob=(j)=>setEditingJob({id:j.id,name:j.name||""});
+  const cancelEditJob=()=>setEditingJob({id:null,name:""});
+  const saveJobName=async()=>{
+    const j=jobsList.find(x=>x.id===editingJob.id);
+    if(!j){cancelEditJob();return;}
+    const v=(editingJob.name||"").trim();
+    if(!v||v===j.name){cancelEditJob();return;}
+    const res=await sb.from('jobs').update({name:v}).eq('id',j.id);
+    if(res.error){alert("Could not rename: "+res.error.message);return;}
+    audit(user,"update","job",j.id,`${jobsModal.id} — ${v}`,`name: "${j.name}" → "${v}"`);
+    cancelEditJob();
     loadJobs(jobsModal.id);
   };
   const openAddPart=()=>{setPartForm(PART_EMPTY);setEditPartId(null);setAddingPart(true);};
@@ -1297,15 +1312,19 @@ const WorkOrders = () => {
                         <div style={{marginBottom:8}}><Badge s={status}/></div>
                         {jobs.map(j=>(
                           <div key={j.id} style={{background:"#f8f9fa",borderRadius:8,marginBottom:6,overflow:"hidden"}}>
-                            <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px"}}>
-                              <div style={{flex:1}}>
-                                <div style={{fontWeight:600,fontSize:14,color:status==="Done"?"#888":"#1a1a2e",textDecoration:status==="Done"?"line-through":""}}>{j.name}</div>
+                            <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px"}}>
+                              <div style={{flex:1,minWidth:0}}>
+                                {editingJob.id===j.id
+                                  ? <input autoFocus value={editingJob.name} onChange={e=>setEditingJob({id:j.id,name:e.target.value})} onBlur={saveJobName} onKeyDown={e=>{if(e.key==="Enter")saveJobName();if(e.key==="Escape")cancelEditJob();}} style={{width:"100%",padding:"6px 10px",border:"1px solid #c0392b",borderRadius:6,fontSize:14,fontWeight:600,background:"#fff"}}/>
+                                  : <div style={{fontWeight:600,fontSize:14,color:status==="Done"?"#888":"#1a1a2e",textDecoration:status==="Done"?"line-through":""}}>{j.name}</div>
+                                }
                                 <div style={{fontSize:11,color:"#aaa",marginTop:2}}>👤 {j.created_by} · {fmtDate(j.created_at)}</div>
                               </div>
                               <select value={j.status} onChange={e=>updJob(j.id,e.target.value)} style={{padding:"5px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:12,cursor:"pointer"}}>
                                 {["Pending","In progress","Waiting for parts","Done"].map(s=><option key={s} value={s}>{s}</option>)}
                               </select>
-                              <button onClick={()=>delJob(j.id)} style={{background:"none",border:"none",cursor:"pointer",color:"#ddd",fontSize:14}}>🗑</button>
+                              <button onClick={()=>startEditJob(j)} title="Rename job" style={{background:"#eef2ff",border:"none",borderRadius:6,padding:"4px 9px",cursor:"pointer",color:"#1a1a2e",fontSize:13}}>✏️</button>
+                              <button onClick={()=>delJob(j.id)} title="Delete job" style={{background:"#fdecea",border:"none",borderRadius:6,padding:"4px 9px",cursor:"pointer",color:"#c0392b",fontSize:13}}>🗑</button>
                             </div>
                             <div style={{padding:"0 14px 12px",borderTop:"1px dashed #e8e8e8",marginTop:4}}>
                               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 2fr",gap:10,marginTop:8}}>
