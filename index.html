@@ -884,59 +884,70 @@ const WorkOrders = () => {
   const printDot=()=>{
     const esc=s=>String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     const idCheck=v=>v&&String(v).trim()?"☑":"☐";
-    const renderSection=sec=>`<div class="sec"><div class="sec-hd">${sec.num}. ${esc(sec.title.toUpperCase())}</div><table class="comp"><tbody>${sec.items.map((it,i)=>{const cv=dot.components[it.key]||{};const ok=cv.status==="OK"?"✓":cv.status==="N/A"?"NA":"";const nr=cv.status==="Needs repair"?"✗":"";const rd=cv.repaired_date||"";const letter=sec.items.length>1?String.fromCharCode(97+i)+". ":"";return `<tr><td class="m">${ok}</td><td class="m">${nr}</td><td class="rd">${esc(rd)}</td><td>${esc(letter)}${esc(it.label)}</td></tr>`;}).join("")}</tbody></table></div>`;
-    const left=DOT_SECTIONS.filter(s=>s.num<=7).map(renderSection).join("");
-    const right=DOT_SECTIONS.filter(s=>s.num>=8).map(renderSection).join("");
-    const html=`<!DOCTYPE html><html><head><title>Annual Vehicle Inspection Report — ${esc(jobsModal.id)}</title><style>
+    // Report number falls back to the WO id if the shop doesn't use a separate report number.
+    const reportNo=(dot.report_number||"").trim()||jobsModal.id;
+    const renderSection=sec=>`<div class="sec"><div class="sec-hd">${sec.num}. ${esc(sec.title.toUpperCase())}</div><table class="comp"><tbody>${sec.items.map((it,i)=>{const cv=dot.components[it.key]||{};const ok=cv.status==="OK"?"✓":cv.status==="N/A"?"NA":"";const nr=cv.status==="Needs repair"?"✗":"";const rd=cv.repaired_date||"";const letter=sec.items.length>1?String.fromCharCode(97+i)+". ":"";return `<tr><td class="m ok">${ok}</td><td class="m nr">${nr}</td><td class="rd">${esc(rd)}</td><td class="lbl-item">${esc(letter)}${esc(it.label)}</td></tr>`;}).join("")}</tbody></table></div>`;
+    // 4-column distribution mirrors Loves/TA forms — fits on one US Letter page reliably.
+    const cols=[[],[],[],[]];
+    DOT_SECTIONS.forEach((s,i)=>cols[i%4].push(s));
+    const cols_html=cols.map(arr=>`<div class="col-sections">${arr.map(renderSection).join("")}</div>`).join("");
+    // Empty <title> so Chrome's print dialog can't print a recognizable title in the auto-header.
+    const html=`<!DOCTYPE html><html><head><title></title><style>
+      @page{size:letter;margin:6mm}
       *{box-sizing:border-box}
-      body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:12mm;font-size:11px;line-height:1.3}
-      .shop{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid #999;padding-bottom:6px;margin-bottom:8px}
-      .shop .name{font-weight:bold;font-size:14px}
-      .shop .addr{font-size:11px;color:#444}
-      h1{text-align:center;font-size:17px;letter-spacing:1px;margin:6px 0 10px}
-      .red{background:#e74c3c;color:#fff;font-weight:bold;font-size:10px;padding:3px 8px;letter-spacing:.5px}
-      .hist{border:1px solid #888;margin-bottom:8px}
-      .hist .lbl{display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;font-weight:bold;color:#fff;background:#e74c3c}
-      .hist .lbl div{padding:3px 6px;border-right:1px solid #fff}
+      body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:0;font-size:9.5px;line-height:1.22}
+      .shop{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid #555;padding-bottom:4px;margin-bottom:6px}
+      .shop .name{font-weight:bold;font-size:13px}
+      .shop .addr{font-size:10px;color:#333}
+      h1{text-align:center;font-size:15px;letter-spacing:1px;margin:4px 0 8px}
+      .hist{border:1px solid #555;margin-bottom:6px}
+      .hist .lbl{display:grid;grid-template-columns:1fr 1fr 1fr;font-size:8px;font-weight:bold;color:#fff;background:#1a1a2e}
+      .hist .lbl div{padding:2px 6px;border-right:1px solid #fff}
       .hist .lbl div:last-child{border-right:none}
-      .hist .val{display:grid;grid-template-columns:1fr 1fr 1fr;font-size:12px;font-weight:bold}
-      .hist .val div{padding:6px;border-right:1px solid #888;min-height:22px}
+      .hist .val{display:grid;grid-template-columns:1fr 1fr 1fr;font-size:11px;font-weight:bold}
+      .hist .val div{padding:4px 6px;border-right:1px solid #555;min-height:20px}
       .hist .val div:last-child{border-right:none}
-      .meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #888;margin-bottom:8px}
-      .meta .col{padding:6px 8px}
-      .meta .col + .col{border-left:1px solid #888}
-      .field{margin-bottom:6px}
-      .field .lbl{font-size:8px;font-weight:bold;text-transform:uppercase;color:#444;letter-spacing:.3px}
-      .field .v{border-bottom:1px solid #aaa;min-height:14px;padding:1px 2px;font-size:11px}
-      .vt span{margin-right:8px;font-size:10px}
-      .id-row{display:flex;gap:6px;font-size:10px;align-items:center;margin-top:2px}
-      .id-row .lbl-id{width:55px;font-weight:bold;font-size:9px}
-      .id-row .id{flex:1;border-bottom:1px solid #aaa;padding:1px 2px;font-size:11px}
-      .twocol{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-      .sec{margin-bottom:5px;break-inside:avoid;page-break-inside:avoid}
-      .sec-hd{background:#e74c3c;color:#fff;font-weight:bold;font-size:10px;padding:3px 6px;letter-spacing:.3px}
-      table.comp{width:100%;border-collapse:collapse;font-size:10px}
-      table.comp td{border:1px solid #999;padding:2px 6px;vertical-align:middle}
-      table.comp td.m{text-align:center;width:24px;font-size:13px;font-weight:bold}
-      table.comp td.rd{width:60px;font-size:9px;text-align:center}
-      .other{border:1px solid #888;margin-top:6px;break-inside:avoid}
-      .other-hd{background:#e74c3c;color:#fff;font-weight:bold;font-size:10px;padding:3px 6px}
-      .other-body{padding:6px 8px;min-height:42px;white-space:pre-wrap;font-size:11px}
-      .result-line{margin-top:8px;font-size:11px}
-      .cert{margin-top:8px;font-weight:bold;font-size:10px;text-align:center;border-top:1px solid #000;padding-top:6px}
-      .sig{margin-top:14px;display:flex;justify-content:space-between;gap:20px}
-      .sig .line{border-top:1px solid #000;flex:1;padding-top:3px;font-size:9px}
-      .legend{font-size:9px;margin:4px 0 6px}
-      @media print{body{margin:10mm} .twocol{gap:5px} .sec{margin-bottom:4px}}
+      .meta{display:grid;grid-template-columns:1fr 1fr;border:1px solid #555;margin-bottom:6px}
+      .meta .col{padding:5px 7px}
+      .meta .col + .col{border-left:1px solid #555}
+      .field{margin-bottom:4px}
+      .field .lbl{font-size:7px;font-weight:bold;text-transform:uppercase;color:#333;letter-spacing:.3px}
+      .field .v{border-bottom:1px solid #888;min-height:13px;padding:1px 2px;font-size:10.5px;font-weight:bold}
+      .vt span{margin-right:6px;font-size:9px}
+      .id-row{display:flex;gap:6px;font-size:9px;align-items:center;margin-top:2px}
+      .id-row .lbl-id{width:60px;font-weight:bold;font-size:8.5px}
+      .id-row .id{flex:1;border-bottom:1px solid #888;padding:1px 2px;font-size:10.5px;font-weight:bold}
+      .components-banner{background:#1a1a2e;color:#fff;font-weight:bold;font-size:10px;padding:3px 6px;letter-spacing:.5px;text-align:center;margin-bottom:3px}
+      .legend{font-size:8px;margin:3px 0 5px}
+      .cols4{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+      .col-sections{display:flex;flex-direction:column;gap:3px}
+      .sec{break-inside:avoid;page-break-inside:avoid;border:1px solid #555}
+      .sec-hd{background:#1a1a2e;color:#fff;font-weight:bold;font-size:8.5px;padding:2px 5px;letter-spacing:.3px}
+      table.comp{width:100%;border-collapse:collapse;font-size:8.5px;table-layout:fixed}
+      table.comp td{border-top:1px solid #ccc;padding:1.5px 3px;vertical-align:middle}
+      table.comp td.m{text-align:center;width:13px;font-size:11px;font-weight:bold}
+      table.comp td.m.ok{color:#0a6c2a}
+      table.comp td.m.nr{color:#9d1414}
+      table.comp td.rd{width:32px;font-size:7.5px;text-align:center;color:#444}
+      table.comp td.lbl-item{font-size:8.5px;line-height:1.2}
+      .other{border:1px solid #555;margin-top:5px;break-inside:avoid}
+      .other-hd{background:#1a1a2e;color:#fff;font-weight:bold;font-size:9px;padding:3px 6px}
+      .other-body{padding:5px 7px;min-height:30px;white-space:pre-wrap;font-size:10px}
+      .footer{display:flex;justify-content:space-between;align-items:flex-end;margin-top:5px;gap:10px}
+      .footer .left{flex:1}
+      .result-line{font-size:10px;margin-bottom:3px}
+      .cert{font-weight:bold;font-size:8.5px;border-top:1px solid #000;padding-top:3px}
+      .sig{flex:0 0 auto;display:flex;gap:14px}
+      .sig .line{border-top:1px solid #000;width:140px;padding-top:2px;font-size:8px;text-align:center}
+      @media print{body{margin:0}}
     </style></head><body>
       <div class="shop">
         <div><div class="name">${esc(SHOP.name)}</div><div class="addr">${esc(SHOP.address)}</div></div>
-        <div style="font-size:10px;text-align:right">Work Order: <b>${esc(jobsModal.id)}</b></div>
       </div>
       <h1>ANNUAL VEHICLE INSPECTION REPORT</h1>
       <div class="hist">
         <div class="lbl"><div>REPORT NUMBER</div><div>FLEET UNIT NUMBER</div><div>DATE</div></div>
-        <div class="val"><div>${esc(dot.report_number)}</div><div>${esc(dot.fleet_unit_number)}</div><div>${esc(dot.inspection_date)}</div></div>
+        <div class="val"><div>${esc(reportNo)}</div><div>${esc(dot.fleet_unit_number)}</div><div>${esc(dot.inspection_date)}</div></div>
       </div>
       <div class="meta">
         <div class="col">
@@ -949,25 +960,29 @@ const WorkOrders = () => {
         </div>
         <div class="col">
           <div class="field"><div class="lbl">Inspector's Name (Print or Type)</div><div class="v">${esc(dot.inspector)}</div></div>
-          <div style="font-size:10px;margin-bottom:6px">${dot.inspector_qualified?"☑":"☐"} <b>This inspector meets the qualification requirements in section 396.19</b></div>
+          <div style="font-size:9px;margin-bottom:4px">${dot.inspector_qualified?"☑":"☐"} <b>This inspector meets the qualification requirements in section 396.19</b></div>
           <div class="field"><div class="lbl">Vehicle Identification (✓ and complete)</div>
-            <div class="id-row"><span class="lbl-id">${idCheck(dot.license_plate)} Lic.Plate</span><span class="id">${esc(dot.license_plate)}</span></div>
+            <div class="id-row"><span class="lbl-id">${idCheck(dot.license_plate)} Lic. Plate</span><span class="id">${esc(dot.license_plate)}</span></div>
             <div class="id-row"><span class="lbl-id">${idCheck(dot.vin)} VIN</span><span class="id">${esc(dot.vin)}</span></div>
             <div class="id-row"><span class="lbl-id">${idCheck(dot.other_id)} Other</span><span class="id">${esc(dot.other_id)}</span></div>
           </div>
           <div class="field"><div class="lbl">Inspection Agency / Location (optional)</div><div class="v">${esc(dot.inspection_agency_location)}</div></div>
         </div>
       </div>
-      <div class="red" style="text-align:center">VEHICLE COMPONENTS INSPECTED</div>
+      <div class="components-banner">VEHICLE COMPONENTS INSPECTED</div>
       <div class="legend"><b>INSTRUCTIONS:</b> Mark column entries to verify inspection: ✓ OK, ✗ NEEDS REPAIR, NA if items do not apply, ___ REPAIRED DATE</div>
-      <div class="twocol"><div>${left}</div><div>${right}</div></div>
+      <div class="cols4">${cols_html}</div>
       <div class="other">
         <div class="other-hd">16. OTHER — List any other condition(s) which may prevent safe operation of this vehicle.</div>
         <div class="other-body">${esc(dot.other_conditions)}</div>
       </div>
-      <div class="result-line"><b>Overall Result:</b> ${esc(dot.overall_result||"—")}</div>
-      <div class="cert">CERTIFICATION: THIS VEHICLE HAS PASSED ALL THE INSPECTION ITEMS FOR THE ANNUAL VEHICLE INSPECTION IN ACCORDANCE WITH 49 CFR PART 396.</div>
-      <div class="sig"><div class="line">Inspector signature</div><div class="line">Date</div></div>
+      <div class="footer">
+        <div class="left">
+          <div class="result-line"><b>Overall Result:</b> ${esc(dot.overall_result||"—")}</div>
+          <div class="cert">CERTIFICATION: THIS VEHICLE HAS PASSED ALL THE INSPECTION ITEMS FOR THE ANNUAL VEHICLE INSPECTION IN ACCORDANCE WITH 49 CFR PART 396.</div>
+        </div>
+        <div class="sig"><div class="line">Inspector signature</div><div class="line">Date</div></div>
+      </div>
     </body></html>`;
     const w=window.open("","_blank");
     if(!w){alert("Pop-up blocked — allow pop-ups to print.");return;}
@@ -1577,9 +1592,10 @@ const WorkOrders = () => {
                   </select>
                 </div>
               </div>
-              <div style={{display:"flex",gap:10,marginTop:16}}>
+              <div style={{display:"flex",gap:10,marginTop:16,flexWrap:"wrap",alignItems:"center"}}>
                 <button onClick={saveDot} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>💾 Save Inspection</button>
                 <button onClick={printDot} style={{padding:"10px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>🖨 Print</button>
+                <span style={{fontSize:11,color:"#888",lineHeight:1.4}}>In the print dialog, expand <strong>More settings</strong> and <strong>uncheck "Headers and footers"</strong> to remove the date / URL line from the printed page. (One-time browser setting.)</span>
               </div>
             </div>
           )}
