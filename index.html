@@ -408,7 +408,7 @@ const NAV = [
   {id:"auditlog",label:"Audit Log",icon:"🛡️",s:"SUPPORT"},
   {id:"settings",label:"Settings",icon:"⚙️",s:"SUPPORT"},
 ];
-const Sidebar = ({active,onNav,user,onLogout,nav = NAV}) => (
+const Sidebar = ({active,onNav,user,onLogout,onRefresh,refreshing,nav = NAV}) => (
   <div style={{width:230,background:"#1a1a2e",display:"flex",flexDirection:"column",height:"100vh",position:"fixed",left:0,top:0,zIndex:100}}>
     <div style={{padding:"20px 20px 16px",borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -437,7 +437,10 @@ const Sidebar = ({active,onNav,user,onLogout,nav = NAV}) => (
         <div style={{width:34,height:34,background:"linear-gradient(135deg,#e74c3c,#c0392b)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:13}}>{user.name.charAt(0)}</div>
         <div><div style={{color:"#fff",fontSize:13,fontWeight:600}}>{user.name}</div><div style={{color:"rgba(255,255,255,0.4)",fontSize:11,textTransform:"capitalize"}}>{user.role}</div></div>
       </div>
-      <button onClick={onLogout} style={{width:"100%",padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:12}}>⬅ Logout</button>
+      <div style={{display:"flex",gap:6}}>
+        <button onClick={onRefresh} disabled={refreshing} title="Refresh data" style={{flex:1,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.7)",cursor:refreshing?"wait":"pointer",fontSize:12,opacity:refreshing?0.5:1}}>{refreshing?"⏳":"🔄"} Refresh</button>
+        <button onClick={onLogout} style={{flex:1,padding:"8px 12px",background:"rgba(255,255,255,0.06)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:12}}>⬅ Logout</button>
+      </div>
     </div>
   </div>
 );
@@ -2454,7 +2457,7 @@ const AuditLog = () => {
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 // Tablet-landscape rail: 64px wide, icons only.
-const IconRail = ({active,onNav,user,onLogout,nav}) => (
+const IconRail = ({active,onNav,user,onLogout,onRefresh,refreshing,nav}) => (
   <div style={{width:64,background:"#1a1a2e",display:"flex",flexDirection:"column",height:"100vh",position:"fixed",left:0,top:0,zIndex:100,alignItems:"center",paddingBottom:8}}>
     <div style={{padding:"14px 0 10px",borderBottom:"1px solid rgba(255,255,255,0.08)",width:"100%",display:"flex",justifyContent:"center"}}>
       <div style={{width:38,height:38,background:"linear-gradient(135deg,#c0392b,#e74c3c)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🚛</div>
@@ -2466,7 +2469,8 @@ const IconRail = ({active,onNav,user,onLogout,nav}) => (
         </button>
       ))}
     </div>
-    <button onClick={onLogout} title="Logout" style={{width:48,height:48,border:"none",borderRadius:10,background:"rgba(255,255,255,0.06)",color:"rgba(255,255,255,0.6)",cursor:"pointer",fontSize:16,margin:"6px 0"}}>⬅</button>
+    <button onClick={onRefresh} disabled={refreshing} title="Refresh data" style={{width:48,height:48,border:"none",borderRadius:10,background:"rgba(255,255,255,0.06)",color:"rgba(255,255,255,0.75)",cursor:refreshing?"wait":"pointer",fontSize:18,margin:"6px 0 2px",opacity:refreshing?0.5:1}}>{refreshing?"⏳":"🔄"}</button>
+    <button onClick={onLogout} title="Logout" style={{width:48,height:48,border:"none",borderRadius:10,background:"rgba(255,255,255,0.06)",color:"rgba(255,255,255,0.6)",cursor:"pointer",fontSize:16,margin:"2px 0 6px"}}>⬅</button>
     <div title={user.name} style={{width:38,height:38,background:"linear-gradient(135deg,#e74c3c,#c0392b)",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:14}}>{user.name.charAt(0)}</div>
   </div>
 );
@@ -2502,10 +2506,13 @@ const BottomNav = ({active,onNav,nav}) => {
 };
 
 // Top-of-content bar shown only in tablet/mobile. Shop/Full toggle for mechanics, current page name.
-const TopBar = ({pageLabel,mode,onToggleMode,canToggle}) => (
-  <div style={{position:"sticky",top:0,zIndex:50,background:"#fff",borderBottom:"1px solid #ececec",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+const TopBar = ({pageLabel,mode,onToggleMode,canToggle,onRefresh,refreshing}) => (
+  <div style={{position:"sticky",top:0,zIndex:50,background:"#fff",borderBottom:"1px solid #ececec",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
     <div style={{fontWeight:800,fontSize:16,color:"#1a1a2e"}}>{pageLabel}</div>
-    {canToggle && <button onClick={onToggleMode} style={{padding:"7px 12px",background:mode==="shop"?"#c0392b":"#fff",color:mode==="shop"?"#fff":"#c0392b",border:"1px solid #c0392b",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:700}}>{mode==="shop"?"🔧 Shop view":"🖥 Full view"}</button>}
+    <div style={{display:"flex",alignItems:"center",gap:8}}>
+      {canToggle && <button onClick={onToggleMode} style={{padding:"7px 12px",background:mode==="shop"?"#c0392b":"#fff",color:mode==="shop"?"#fff":"#c0392b",border:"1px solid #c0392b",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:700}}>{mode==="shop"?"🔧 Shop view":"🖥 Full view"}</button>}
+      <button onClick={onRefresh} title="Refresh data" aria-label="Refresh" style={{padding:"7px 10px",background:"#fff",color:"#1a1a2e",border:"1px solid #e0e0e0",borderRadius:20,cursor:"pointer",fontSize:14,minWidth:36,display:"flex",alignItems:"center",justifyContent:"center",opacity:refreshing?0.5:1}} disabled={refreshing}>{refreshing?"⏳":"🔄"}</button>
+    </div>
   </div>
 );
 
@@ -2531,6 +2538,11 @@ const App = () => {
   const [page,setPage]=useState("dashboard");
   // mode: shop (mechanic-style trimmed nav) vs full. Mechanics on tablets default to shop; everyone else defaults to full.
   const [mode,setMode]=useState("shop");
+  const [refreshKey,setRefreshKey]=useState(0);
+  const [refreshing,setRefreshing]=useState(false);
+  // Bump the key on the rendered page so its component remounts and useEffects re-fire,
+  // pulling fresh data without affecting nav, scroll, or open modals on OTHER pages.
+  const onRefresh = () => { setRefreshing(true); setRefreshKey(k => k + 1); setTimeout(() => setRefreshing(false), 450); };
   const vp = useViewport();
   const isMech = user?.role === "mechanic";
   const shopActive = !!user && isMech && mode === "shop" && !vp.isDesktop;
@@ -2555,11 +2567,11 @@ const App = () => {
   return (
     <UserCtx.Provider value={user}><ModeCtx.Provider value={{mode,shopActive}}>
       <div style={{display:"flex",minHeight:"100vh",background:"#f4f6f9"}}>
-        {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
-        {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} nav={activeNav}/>}
+        {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav}/>}
+        {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav}/>}
         <main style={{marginLeft:sidebarWidth,flex:1,padding:mainPadding,minHeight:"100vh",paddingBottom:vp.isMobile?"calc(80px + env(safe-area-inset-bottom, 0px))":mainPadding}}>
-          {!vp.isDesktop && <TopBar pageLabel={currentNav?.label||"TMS"} mode={mode} onToggleMode={()=>setMode(m=>m==="shop"?"full":"shop")} canToggle={canToggleMode}/>}
-          <div style={{padding:vp.isMobile?12:0}}>{pages[page]||pages.dashboard}</div>
+          {!vp.isDesktop && <TopBar pageLabel={currentNav?.label||"TMS"} mode={mode} onToggleMode={()=>setMode(m=>m==="shop"?"full":"shop")} canToggle={canToggleMode} onRefresh={onRefresh} refreshing={refreshing}/>}
+          <div key={`${page}-${refreshKey}`} style={{padding:vp.isMobile?12:0}}>{pages[page]||pages.dashboard}</div>
         </main>
         {vp.isMobile && <BottomNav active={page} onNav={setPage} nav={activeNav}/>}
         {/* Temporary debug indicator: shows the current viewport tier so we can diagnose
