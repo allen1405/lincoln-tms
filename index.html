@@ -2509,8 +2509,25 @@ const TopBar = ({pageLabel,mode,onToggleMode,canToggle}) => (
   </div>
 );
 
+// Persist the logged-in user across refresh. Password is stripped before storing —
+// the rest (id, name, email, role, active) is enough to drive the app and avoids
+// putting plaintext passwords in localStorage.
+const SESSION_KEY = 'lincoln_tms_user';
+const loadSession = () => {
+  try { const raw = typeof localStorage !== 'undefined' && localStorage.getItem(SESSION_KEY); return raw ? JSON.parse(raw) : null; }
+  catch { return null; }
+};
+const saveSession = (u) => {
+  try {
+    if (!u) { localStorage.removeItem(SESSION_KEY); return; }
+    const { password, ...safe } = u;
+    localStorage.setItem(SESSION_KEY, JSON.stringify(safe));
+  } catch {}
+};
+
 const App = () => {
-  const [user,setUser]=useState(null);
+  const [user,setUserState]=useState(loadSession);
+  const setUser = u => { saveSession(u); setUserState(u); };
   const [page,setPage]=useState("dashboard");
   // mode: shop (mechanic-style trimmed nav) vs full. Mechanics on tablets default to shop; everyone else defaults to full.
   const [mode,setMode]=useState("shop");
