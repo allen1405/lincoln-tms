@@ -1301,6 +1301,10 @@ const WorkOrders = () => {
               {(c.mc_number||c.dot_number)&&<span style={{color:"#666",fontFamily:"monospace",fontSize:12}}>{c.mc_number&&<>MC# {c.mc_number}</>}{c.mc_number&&c.dot_number&&" · "}{c.dot_number&&<>DOT# {c.dot_number}</>}</span>}
             </div>
           );})()}
+          {(jobsModal.description||"").trim()&&<div style={{padding:"10px 14px",marginBottom:14,background:"#fffdf5",border:"1px solid #f0e6c8",borderRadius:8,fontSize:13,color:"#5b4a16",lineHeight:1.4,whiteSpace:"pre-wrap"}}>
+            <div style={{fontSize:10,fontWeight:800,letterSpacing:0.5,color:"#a07a14",textTransform:"uppercase",marginBottom:4}}>📋 Description / Customer complaint</div>
+            {jobsModal.description}
+          </div>}
           <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20,overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
             <button className={`tab-btn${jobTab==="jobs"?" active":""}`} onClick={()=>setJobTab("jobs")}>🔧 Jobs ({jobsList.length}) · {jobsList.reduce((s,j)=>s+Number(j.labor||0),0)}h</button>
             <button className={`tab-btn${jobTab==="parts"?" active":""}`} onClick={()=>setJobTab("parts")}>🔩 Parts ({partsList.length})</button>
