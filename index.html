@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+<!-- Zoom lock removed: the Samsung auto-rescale was caused by sub-16px inputs triggering
+     focus auto-zoom (inputs are now 16px on touch tiers). Pinch-zoom restored for
+     accessibility — re-add maximum-scale=1 ONLY if tablet testing shows rescaling again. -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <title>Lincoln Truck & Trailer Repair — Shop TMS</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -21,19 +24,28 @@ input:focus, select:focus, textarea:focus { border-color: #c0392b !important; ou
 .tab-btn.active { font-weight: 700; color: #c0392b; border-bottom-color: #c0392b; }
 .tab-btn:not(.active) { color: #888; }
 
-/* Mobile / tablet touch-target tuning. Applies under 1280px so it covers tablets and phones, matching the JS breakpoint. */
-@media (max-width: 1279px) {
-  /* Bump inputs/selects/textareas to a comfortable 44px tap target. */
-  input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="date"], input[type="search"], input[type="tel"], select, textarea {
-    min-height: 44px;
-    font-size: 15px !important;
-  }
-  textarea { min-height: 72px; }
-  /* Every button gets enough vertical clearance — the existing padding usually places it around 32–38px. */
-  button { min-height: 40px; }
-  /* The tab bar inside detail modals needs to scroll horizontally instead of wrapping. */
-  .tab-btn { padding: 12px 14px; font-size: 13px; flex-shrink: 0; }
+/* Mobile / tablet touch-target tuning, keyed to the JS tier via body[data-tier] so CSS
+   can never disagree with the layout. (The old max-width:1279px media query missed the
+   1280–1319px hysteresis band, where tablets kept the tablet layout but lost touch sizing.)
+   Inputs are 16px on touch tiers — below 16px, mobile browsers auto-zoom on focus, which
+   was the root cause of the Samsung tablet page-rescaling. */
+body:not([data-tier="desktop"]) input[type="text"], body:not([data-tier="desktop"]) input[type="email"], body:not([data-tier="desktop"]) input[type="password"], body:not([data-tier="desktop"]) input[type="number"], body:not([data-tier="desktop"]) input[type="date"], body:not([data-tier="desktop"]) input[type="search"], body:not([data-tier="desktop"]) input[type="tel"], body:not([data-tier="desktop"]) select, body:not([data-tier="desktop"]) textarea {
+  min-height: 44px;
+  font-size: 16px !important;
 }
+body:not([data-tier="desktop"]) textarea { min-height: 72px; }
+/* Every button gets enough vertical clearance — except deliberately tiny overlay buttons. */
+body:not([data-tier="desktop"]) button { min-height: 40px; }
+body:not([data-tier="desktop"]) button.icon-xs { min-height: 0; }
+/* The tab bar inside detail modals needs to scroll horizontally instead of wrapping. */
+body:not([data-tier="desktop"]) .tab-btn { padding: 12px 14px; font-size: 13px; flex-shrink: 0; }
+/* Full-sheet modal height: dvh tracks the visible viewport (address bar / keyboard),
+   so bottom buttons aren't hidden behind browser chrome. vh fallback for old browsers. */
+.sheet-full { height: 100vh; max-height: 100vh; }
+@supports (height: 100dvh) { .sheet-full { height: 100dvh; max-height: 100dvh; } }
+/* Quick-Add job chips: CSS hover (mouse only) instead of JS mouseenter — on touch the
+   JS version left chips stuck dark after every tap. */
+@media (hover: hover) { .chip:hover { background: #1a1a2e !important; color: #fff !important; } }
 @media (max-width: 700px) {
   /* On true mobile / tablet portrait, push to the 44px minimum and bump base text. */
   body { font-size: 15px; }
@@ -64,48 +76,45 @@ const UserCtx = createContext(null);
 const ModeCtx = createContext({mode:"full", shopActive:false});
 
 // ─── VIEWPORT ─────────────────────────────────────────────────────────────────
-// Tiers: mobile <900, tablet 900-1279, desktop ≥1280.
-// Two anti-flicker measures:
-//   1. matchMedia-based detection (more stable than window.innerWidth; not affected by
-//      Android Chrome's address-bar viewport tweaks the same way).
-//   2. Hysteresis (40 CSS px buffer): once committed to a tier, the width has to clearly
-//      exceed the next boundary before we switch. Stops Samsung tablets that sit right
-//      at 1280 CSS px from flipping back and forth on navigation.
-const useViewport = () => {
+// Tiers: mobile <900, tablet 900-1279, desktop ≥1280, with 40px hysteresis: once
+// committed to a tier, the width must clearly exceed the next boundary before switching.
+// Stops Samsung tablets sitting right at 1280 CSS px from flipping on navigation.
+// ONE shared store (not per-hook state): hysteresis is path-dependent, so independent
+// useViewport() instances mounted at different times could disagree — a modal rendering
+// in tablet mode while the shell was desktop. Every component now sees the same tier,
+// and body[data-tier] keeps the CSS in lockstep with the JS.
+const viewportStore = (() => {
+  const BUFFER = 40;
   const measure = () => typeof window === "undefined" ? 1400 : window.innerWidth;
-  const initialTier = () => {
+  const rawTier = w => w < 900 ? "mobile" : w < 1280 ? "tablet" : "desktop";
+  let state = (() => { const w = measure(); return { tier: rawTier(w), width: w }; })();
+  const subs = new Set();
+  const syncBody = () => { if (typeof document !== "undefined" && document.body) document.body.dataset.tier = state.tier; };
+  syncBody();
+  const apply = () => {
     const w = measure();
-    return { tier: w < 900 ? "mobile" : w < 1280 ? "tablet" : "desktop", width: w };
+    let tier = state.tier;
+    if (tier === "mobile" && w >= 900 + BUFFER) tier = "tablet";
+    else if (tier === "tablet" && w < 900 - BUFFER) tier = "mobile";
+    else if (tier === "tablet" && w >= 1280 + BUFFER) tier = "desktop";
+    else if (tier === "desktop" && w < 1280 - BUFFER) tier = "tablet";
+    if (tier !== state.tier || w !== state.width) {
+      state = { tier, width: w };
+      syncBody();
+      subs.forEach(f => f(state));
+    }
   };
-  const [state, setState] = useState(initialTier);
-  useEffect(() => {
-    const BUFFER = 40;
-    const apply = () => {
-      const w = measure();
-      setState(prev => {
-        let tier = prev.tier;
-        // Only leave the current tier if width clearly exceeds the next boundary.
-        if (tier === "mobile" && w >= 900 + BUFFER) tier = "tablet";
-        else if (tier === "tablet" && w < 900 - BUFFER) tier = "mobile";
-        else if (tier === "tablet" && w >= 1280 + BUFFER) tier = "desktop";
-        else if (tier === "desktop" && w < 1280 - BUFFER) tier = "tablet";
-        return { tier, width: w };
-      });
-    };
+  if (typeof window !== "undefined") {
     let raf = 0;
-    const on = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(apply);
-    };
-    apply(); // settle after mount
+    const on = () => { if (raf) cancelAnimationFrame(raf); raf = requestAnimationFrame(apply); };
     window.addEventListener("resize", on);
     window.addEventListener("orientationchange", on);
-    return () => {
-      window.removeEventListener("resize", on);
-      window.removeEventListener("orientationchange", on);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, []);
+  }
+  return { get: () => state, sub: f => { subs.add(f); return () => subs.delete(f); } };
+})();
+const useViewport = () => {
+  const [state, setState] = useState(viewportStore.get);
+  useEffect(() => viewportStore.sub(setState), []);
   return {
     width: state.width,
     isMobile: state.tier === "mobile",
@@ -113,8 +122,6 @@ const useViewport = () => {
     isDesktop: state.tier === "desktop"
   };
 };
-// Pick a value by viewport tier. responsive(desktop, tabletLandscape, mobile). tabletLandscape/mobile fall back to desktop if not provided.
-const responsive = (vp, d, tl, m) => vp.isMobile ? (m ?? tl ?? d) : vp.isTabletLandscape ? (tl ?? d) : d;
 
 // ─── AUDIT LOG HELPER ─────────────────────────────────────────────────────────
 // Fire-and-forget. Called from every write site. user can be null for system actions.
@@ -254,16 +261,23 @@ const rescheduleAutoReminder = async (user, prev) => {
 
 const Modal = ({title,onClose,children,wide}) => {
   const vp = useViewport();
-  const fullSheet = vp.width < 700; // mobile/portrait: take full screen
+  const fullSheet = vp.isMobile; // tier-based (hysteresis-stable), not raw width
+  // Lock body scroll while open — otherwise scrolling past the end of a long modal
+  // scrolls the page behind it and closing lands somewhere else.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
   const containerStyle = fullSheet
-    ? {background:"#fff",width:"100vw",height:"100vh",maxHeight:"100vh",overflow:"auto",borderRadius:0,boxShadow:"none"}
-    : {background:"#fff",borderRadius:12,width:wide?"min(800px,98vw)":"min(600px,95vw)",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"};
+    ? {background:"#fff",width:"100vw",overflow:"auto",overscrollBehavior:"contain",borderRadius:0,boxShadow:"none",paddingBottom:"env(safe-area-inset-bottom, 0px)"}
+    : {background:"#fff",borderRadius:12,width:wide?"min(800px,98vw)":"min(600px,95vw)",maxHeight:"90vh",overflow:"auto",overscrollBehavior:"contain",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"};
   const overlayStyle = fullSheet
     ? {position:"fixed",inset:0,zIndex:1000}
     : {position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16};
   return (
     <div style={overlayStyle}>
-      <div style={containerStyle}>
+      <div className={fullSheet?"sheet-full":undefined} style={containerStyle}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:fullSheet?"14px 16px":"20px 24px",borderBottom:"1px solid #eee",position:"sticky",top:0,background:"#fff",zIndex:1}}>
           <h3 style={{margin:0,fontSize:fullSheet?16:18,fontWeight:700}}>{title}</h3>
           <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:fullSheet?28:22,color:"#666",padding:fullSheet?"4px 8px":0,minWidth:fullSheet?44:"auto",minHeight:fullSheet?44:"auto"}}>×</button>
@@ -367,14 +381,14 @@ const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = fa
         {photos.map(p => (
           <div key={p.id} style={{position:"relative",width:tile,height:tile,borderRadius:8,overflow:"hidden",background:"#f0f0f0",border:"1px solid #e0e0e0"}}>
             <img src={p.public_url} alt={p.caption||""} onClick={()=>setLightbox(p)} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer",display:"block"}}/>
-            <button onClick={()=>del(p)} title="Delete" style={{position:"absolute",top:2,right:2,width:20,height:20,padding:0,background:"rgba(192,57,43,0.92)",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontSize:11,lineHeight:1}}>×</button>
+            <button className="icon-xs" onClick={()=>del(p)} title="Delete" style={{position:"absolute",top:2,right:2,width:24,height:24,padding:0,background:"rgba(192,57,43,0.92)",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontSize:12,lineHeight:1}}>×</button>
           </div>
         ))}
         {compact && <button onClick={()=>inputRef.current?.click()} disabled={uploading||!entityId} title="Add photo" style={{width:tile,height:tile,border:"1px dashed #c0392b",background:"#fff",color:"#c0392b",borderRadius:8,cursor:uploading?"wait":"pointer",fontSize:20,opacity:uploading||!entityId?0.5:1}}>{uploading?"…":"📷"}</button>}
         {!compact && photos.length===0 && <div style={{fontSize:12,color:"#aaa",padding:"10px 0"}}>No photos yet.</div>}
       </div>
       {lightbox && (
-        <div onClick={()=>setLightbox(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,cursor:"zoom-out"}}>
+        <div onClick={()=>setLightbox(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,cursor:"zoom-out",overscrollBehavior:"contain"}}>
           <img src={lightbox.public_url} alt={lightbox.caption||""} style={{maxWidth:"95vw",maxHeight:"95vh",objectFit:"contain",boxShadow:"0 20px 60px rgba(0,0,0,0.6)"}}/>
           <button onClick={e=>{e.stopPropagation();setLightbox(null);}} style={{position:"absolute",top:16,right:16,width:40,height:40,background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:20,cursor:"pointer",fontSize:22}}>×</button>
         </div>
@@ -511,7 +525,7 @@ const Dashboard = ({onNav}) => {
         {l:"Customers",v:custs.length,i:"👥",c:"#27ae60",page:"customers"},
         {l:"Revenue",v:`$${revenue.toLocaleString()}`,i:"💰",c:"#e67e22",page:"reports"}
       ];
-  const cols=vp.width<600?"repeat(2,1fr)":vp.width<900?"repeat(2,1fr)":"repeat(4,1fr)";
+  const cols=vp.isMobile?"repeat(2,1fr)":"repeat(4,1fr)";
   return (
     <div>
       <div style={{marginBottom:24}}><h1 style={{margin:"0 0 4px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>{shopActive?"My Work":"Dashboard"}</h1><p style={{margin:0,color:"#888"}}>Good day, {user.name.split(" ")[0]}! 👋</p></div>
@@ -534,7 +548,7 @@ const Dashboard = ({onNav}) => {
           {reminders.slice(0,3).map(r=><div key={r.id} style={{fontSize:13,color:"#555",marginBottom:6}}>• <strong>{r.customer_name}</strong> — {r.equipment_label}: {r.note} <span style={{color:"#e74c3c"}}>(due {fmtDay(r.reminder_date)})</span></div>)}
         </div>
       )}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+      <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"1fr 1fr",gap:20}}>
         <div style={{background:"#fff",borderRadius:12,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
             <h3 style={{margin:0,fontSize:15,fontWeight:700}}>Recent Work Orders</h3>
@@ -737,6 +751,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
 const WorkOrders = () => {
   const user = useContext(UserCtx);
   const {shopActive} = useContext(ModeCtx);
+  const vp = useViewport();
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
   const [jobLabor,setJobLabor]=useState({}); // work_order_id → summed job labor hours (real labor; w.labor column is unused here)
   const [jobsByWo,setJobsByWo]=useState({});
@@ -1154,8 +1169,8 @@ const WorkOrders = () => {
         <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search work orders..." style={{width:"100%",padding:"10px 12px 10px 36px",border:"1px solid #ddd",borderRadius:8,fontSize:14}}/>
       </div>
       {view==="voided"&&(
-        <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-          <table style={{width:"100%",borderCollapse:"collapse"}}>
+        <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
             <thead><tr><TH c="WO #"/><TH c="Customer"/><TH c="Unit"/><TH c="Status when voided"/><TH c="Voided at"/><TH c="By"/><TH c=""/></tr></thead>
             <tbody>{(()=>{const vl=filtered.filter(w=>w.is_voided).sort((a,b)=>String(b.voided_at||"").localeCompare(String(a.voided_at||""))); if(vl.length===0) return <tr><td colSpan={7} style={{textAlign:"center",padding:40,color:"#aaa"}}>No voided work orders.</td></tr>; return vl.map((w,i)=>(
               <tr key={w.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
@@ -1185,8 +1200,8 @@ const WorkOrders = () => {
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
                     <span onClick={()=>openJobs(w)} style={{fontWeight:700,fontSize:12,color:"#c0392b",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted"}} title="Click to open details (jobs, parts, notes, DOT)">{w.id}</span>
                     <div style={{display:"flex",gap:4}}>
-                      <button onClick={()=>openEdit(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13}} title="Edit work order">✏️</button>
-                      <button onClick={()=>del(w.id)} style={{background:"#fdecea",border:"none",borderRadius:6,padding:"2px 6px",cursor:"pointer",color:"#c0392b",fontSize:13}} title="Delete WO">🗑</button>
+                      <button onClick={()=>openEdit(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,minWidth:36}} title="Edit work order">✏️</button>
+                      <button onClick={()=>del(w.id)} style={{background:"#fdecea",border:"none",borderRadius:6,padding:"2px 6px",cursor:"pointer",color:"#c0392b",fontSize:13,minWidth:36}} title="Delete WO">🗑</button>
                     </div>
                   </div>
                   {w.is_road_call&&<div style={{display:"inline-block",background:"#c0392b",color:"#fff",fontSize:9,fontWeight:800,letterSpacing:0.5,padding:"2px 6px",borderRadius:4,marginBottom:4}}>🚨 ROAD CALL</div>}
@@ -1213,13 +1228,13 @@ const WorkOrders = () => {
           const noteCount=notesByWo[w.id]||0;
           const agg=aggregatePartsStatus(parts);
           return (
-            <div key={w.id} style={{display:"grid",gridTemplateColumns:"240px 1fr",gap:12,marginBottom:10,alignItems:"stretch"}}>
+            <div key={w.id} style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"240px 1fr",gap:12,marginBottom:10,alignItems:"stretch"}}>
               <div style={{background:"#fff",borderRadius:10,padding:12,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}}>
                 <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
                   <span onClick={()=>openJobs(w)} style={{fontWeight:700,fontSize:12,color:"#c0392b",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted"}} title="Click to open details (jobs, parts, notes, DOT)">{w.id}</span>
                   <div style={{display:"flex",gap:4}}>
-                    <button onClick={()=>openEdit(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13}} title="Edit work order">✏️</button>
-                    <button onClick={()=>del(w.id)} style={{background:"#fdecea",border:"none",borderRadius:6,padding:"2px 6px",cursor:"pointer",color:"#c0392b",fontSize:13}} title="Delete WO">🗑</button>
+                    <button onClick={()=>openEdit(w)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,minWidth:36}} title="Edit work order">✏️</button>
+                    <button onClick={()=>del(w.id)} style={{background:"#fdecea",border:"none",borderRadius:6,padding:"2px 6px",cursor:"pointer",color:"#c0392b",fontSize:13,minWidth:36}} title="Delete WO">🗑</button>
                   </div>
                 </div>
                 {w.is_road_call&&<div style={{display:"inline-block",background:"#c0392b",color:"#fff",fontSize:9,fontWeight:800,letterSpacing:0.5,padding:"2px 6px",borderRadius:4,marginBottom:4}}>🚨 ROAD CALL</div>}
@@ -1232,7 +1247,7 @@ const WorkOrders = () => {
                   {WO_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
-              <div style={{background:"#fff",borderRadius:10,padding:14,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"grid",gridTemplateColumns:"1fr 1.2fr 1.4fr",gap:16}}>
+              <div style={{background:"#fff",borderRadius:10,padding:14,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"1fr 1.2fr 1.4fr",gap:16}}>
                 <div>
                   <div style={{fontSize:10,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}}>Customer</div>
                   <div style={{fontSize:13,fontWeight:600,marginBottom:6}}>{w.customer}</div>
@@ -1330,10 +1345,10 @@ const WorkOrders = () => {
           <Field label="Company Name" value={newCust.name} onChange={v=>setNewCust(p=>({...p,name:v}))} required/>
           <Field label="Address" value={newCust.address} onChange={v=>setNewCust(p=>({...p,address:v}))}/>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <Field label="Phone" value={newCust.phone} onChange={v=>setNewCust(p=>({...p,phone:v}))}/>
+            <Field label="Phone" value={newCust.phone} onChange={v=>setNewCust(p=>({...p,phone:v}))} type="tel" autoComplete="tel"/>
             <Field label="Email" value={newCust.email} onChange={v=>setNewCust(p=>({...p,email:v}))} type="email"/>
-            <Field label="MC #" value={newCust.mc_number} onChange={v=>setNewCust(p=>({...p,mc_number:v}))} placeholder="e.g. 123456"/>
-            <Field label="DOT #" value={newCust.dot_number} onChange={v=>setNewCust(p=>({...p,dot_number:v}))} placeholder="e.g. 7654321"/>
+            <Field label="MC #" value={newCust.mc_number} onChange={v=>setNewCust(p=>({...p,mc_number:v}))} placeholder="e.g. 123456" inputMode="numeric"/>
+            <Field label="DOT #" value={newCust.dot_number} onChange={v=>setNewCust(p=>({...p,dot_number:v}))} placeholder="e.g. 7654321" inputMode="numeric"/>
             <Field label="# of trucks" value={newCust.truck_count} onChange={v=>setNewCust(p=>({...p,truck_count:v}))} type="number" placeholder="e.g. 8"/>
             <Field label="# of trailers" value={newCust.trailer_count} onChange={v=>setNewCust(p=>({...p,trailer_count:v}))} type="number" placeholder="e.g. 12"/>
           </div>
@@ -1375,8 +1390,7 @@ const WorkOrders = () => {
                 <div style={{fontSize:13,fontWeight:600,color:"#555",marginBottom:8}}>Quick Add:</div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>
                   {COMMON_JOBS.map(j=>(
-                    <button key={j} onClick={()=>addJob(j)} style={{padding:"5px 12px",background:"#f0f0f0",border:"1px solid #ddd",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:500,color:"#444"}}
-                      onMouseEnter={e=>{e.target.style.background="#1a1a2e";e.target.style.color="#fff";}} onMouseLeave={e=>{e.target.style.background="#f0f0f0";e.target.style.color="#444";}}>
+                    <button key={j} className="chip" onClick={()=>addJob(j)} style={{padding:"5px 12px",background:"#f0f0f0",border:"1px solid #ddd",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:500,color:"#444"}}>
                       + {j}
                     </button>
                   ))}
@@ -1594,7 +1608,7 @@ const WorkOrders = () => {
                 <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:12}}>
                   <Field label="City" value={dot.city||""} onChange={v=>setDotField("city",v)}/>
                   <Field label="State" value={dot.state||""} onChange={v=>setDotField("state",v)}/>
-                  <Field label="ZIP" value={dot.zip||""} onChange={v=>setDotField("zip",v)}/>
+                  <Field label="ZIP" value={dot.zip||""} onChange={v=>setDotField("zip",v)} inputMode="numeric"/>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                   <Field label="Inspector's name" value={dot.inspector} onChange={v=>setDotField("inspector",v)}/>
@@ -1617,7 +1631,7 @@ const WorkOrders = () => {
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
                   <Field label="Make" value={dot.vehicle_make} onChange={v=>setDotField("vehicle_make",v)} placeholder="Peterbilt"/>
                   <Field label="Unit number" value={dot.unit_number} onChange={v=>setDotField("unit_number",v)}/>
-                  <Field label="Odometer" value={dot.odometer} onChange={v=>setDotField("odometer",v)}/>
+                  <Field label="Odometer" value={dot.odometer} onChange={v=>setDotField("odometer",v)} inputMode="numeric"/>
                 </div>
               </div>
               <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,margin:"4px 0 6px"}}>Vehicle Components Inspected</div>
@@ -1869,10 +1883,10 @@ const Customers = () => {
           <Field label="Company Name" value={form.name} onChange={v=>setForm(p=>({...p,name:v}))} required/>
           <Field label="Address" value={form.address} onChange={v=>setForm(p=>({...p,address:v}))}/>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <Field label="Phone" value={form.phone} onChange={v=>setForm(p=>({...p,phone:v}))}/>
+            <Field label="Phone" value={form.phone} onChange={v=>setForm(p=>({...p,phone:v}))} type="tel" autoComplete="tel"/>
             <Field label="Email" value={form.email} onChange={v=>setForm(p=>({...p,email:v}))} type="email"/>
-            <Field label="MC #" value={form.mc_number} onChange={v=>setForm(p=>({...p,mc_number:v}))} placeholder="e.g. 123456"/>
-            <Field label="DOT #" value={form.dot_number} onChange={v=>setForm(p=>({...p,dot_number:v}))} placeholder="e.g. 7654321"/>
+            <Field label="MC #" value={form.mc_number} onChange={v=>setForm(p=>({...p,mc_number:v}))} placeholder="e.g. 123456" inputMode="numeric"/>
+            <Field label="DOT #" value={form.dot_number} onChange={v=>setForm(p=>({...p,dot_number:v}))} placeholder="e.g. 7654321" inputMode="numeric"/>
             <Field label="# of trucks" value={form.truck_count} onChange={v=>setForm(p=>({...p,truck_count:v}))} type="number" placeholder="e.g. 8"/>
             <Field label="# of trailers" value={form.trailer_count} onChange={v=>setForm(p=>({...p,trailer_count:v}))} type="number" placeholder="e.g. 12"/>
           </div>
@@ -1971,8 +1985,8 @@ const Appointments = () => {
         <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Appointments</h1>
         <Btn label="Add appointment" onClick={()=>setModal(true)} color="#c0392b"/>
       </div>
-      <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-        <table style={{width:"100%",borderCollapse:"collapse"}}>
+      <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
           <thead><tr><TH c="No."/><TH c="Company"/><TH c="Unit #"/><TH c="VIN"/><TH c="Date"/><TH c="Status"/><TH c=""/></tr></thead>
           <tbody>{list.length===0?<tr><td colSpan={7} style={{textAlign:"center",padding:40,color:"#aaa"}}>No appointments</td></tr>:list.map((a,i)=>(
             <tr key={a.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
@@ -2115,7 +2129,7 @@ const RemindersPage = () => {
         ))}
         {sortBy&&<button onClick={()=>setSortBy(null)} style={{padding:"7px 14px",background:"#fff",color:"#c0392b",border:"1px solid #c0392b",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:600}}>↺ Reset sort</button>}
       </div>
-      {vp.width<900?(
+      {vp.isMobile?(
         <div>
           {sorted.length===0?<div style={{padding:30,textAlign:"center",color:"#aaa",background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>No reminders.</div>:sorted.map(r=>{
             const st=statusOf(r);
@@ -2174,9 +2188,9 @@ const RemindersPage = () => {
                     <span style={{padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:700,background:stColor+"18",color:stColor,whiteSpace:"nowrap"}}>{stLabel}</span>
                   </td>
                   <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",whiteSpace:"nowrap",textAlign:"right"}}>
-                    {!r.completed&&<button onClick={()=>complete(r.id)} title="Mark done" style={{padding:"5px 9px",background:"#27ae60",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,marginRight:4}}>✓</button>}
-                    <button onClick={()=>openEdit(r)} title="Edit" style={{padding:"5px 9px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,marginRight:4}}>✏️</button>
-                    <button onClick={()=>del(r.id)} title="Delete" style={{padding:"5px 9px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>🗑</button>
+                    {!r.completed&&<button onClick={()=>complete(r.id)} title="Mark done" style={{padding:"5px 9px",background:"#27ae60",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,marginRight:4,minWidth:36}}>✓</button>}
+                    <button onClick={()=>openEdit(r)} title="Edit" style={{padding:"5px 9px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,marginRight:4,minWidth:36}}>✏️</button>
+                    <button onClick={()=>del(r.id)} title="Delete" style={{padding:"5px 9px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,minWidth:36}}>🗑</button>
                   </td>
                 </tr>
               );
@@ -2285,8 +2299,8 @@ const Settings = () => {
         <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Settings — Users</h1>
         <Btn label="Add User" onClick={()=>setModal(true)} color="#c0392b"/>
       </div>
-      <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-        <table style={{width:"100%",borderCollapse:"collapse"}}>
+      <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
           <thead><tr><TH c="Name"/><TH c="Email"/><TH c="Role"/><TH c="Status"/><TH c="Actions"/></tr></thead>
           <tbody>{users.map((u,i)=>(
             <tr key={u.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
@@ -2328,9 +2342,9 @@ const Salaries = () => {
   return (
     <div>
       <h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Salaries</h1>
-      <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+      <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
         <div style={{padding:"16px 20px",borderBottom:"1px solid #f0f0f0",display:"flex",justifyContent:"space-between"}}><h3 style={{margin:0,fontSize:15,fontWeight:700}}>Employee Salaries</h3><span style={{fontSize:13,color:"#888",background:"#f8f9fa",padding:"6px 12px",borderRadius:8}}>Mar 2026</span></div>
-        <table style={{width:"100%",borderCollapse:"collapse"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
           <thead><tr><TH c="Employee"/><TH c="Role"/><TH c="WOs Assigned"/><TH c="Labor Revenue"/><TH c="Total to Pay"/></tr></thead>
           <tbody>{users.map(u=>{
             const myWos=wos.filter(w=>w.mechanic===u.name);
@@ -2351,6 +2365,7 @@ const Salaries = () => {
 
 // ─── REPORTS / INVOICES / ESTIMATES ──────────────────────────────────────────
 const Reports = () => {
+  const vp = useViewport();
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
   useEffect(()=>{sb.from('work_orders').select('*').neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
@@ -2358,7 +2373,7 @@ const Reports = () => {
   return (
     <div>
       <h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Reports</h1>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+      <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"1fr 1fr",gap:20}}>
         <div style={{background:"#fff",borderRadius:12,padding:24,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
           <h3 style={{margin:"0 0 16px",fontSize:16,fontWeight:700}}>Revenue</h3>
           <div style={{fontSize:32,fontWeight:800,marginBottom:16}}>${(labor+parts).toLocaleString()}</div>
@@ -2382,7 +2397,7 @@ const Invoices = () => {
   useEffect(()=>{sb.from('work_orders').select('*').eq('status','Done').neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
   return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Invoices</h1><Btn label="Create" onClick={()=>{}} color="#c0392b"/></div>
-    <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+    <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
       <thead><tr><TH c="Invoice Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/><TH c="Status"/></tr></thead>
       <tbody>{wos.length===0?<tr><td colSpan={6} style={{textAlign:"center",padding:40,color:"#aaa"}}>No completed WOs yet.</td></tr>:wos.map((w,i)=>(
         <tr key={w.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
@@ -2401,7 +2416,7 @@ const Estimates = () => {
   useEffect(()=>{sb.from('work_orders').select('*').in('status',['Waiting list','Inspection']).neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
   return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1><Btn label="Create" onClick={()=>{}} color="#c0392b"/></div>
-    <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+    <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
       <thead><tr><TH c="Estimate Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/></tr></thead>
       <tbody>{wos.length===0?<tr><td colSpan={5} style={{textAlign:"center",padding:40,color:"#aaa"}}>No estimates found.</td></tr>:wos.map((w,i)=>(
         <tr key={w.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
@@ -2472,7 +2487,7 @@ const AuditLog = () => {
         <div style={{fontSize:13,color:"#888"}}>{logs.length} record{logs.length!==1?"s":""}{hasMore?"+":""}</div>
       </div>
       <div style={{background:"#fff",borderRadius:12,padding:16,marginBottom:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-        <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr 1fr 1fr 1fr auto",gap:10,alignItems:"end"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,alignItems:"end"}}>
           <div>
             <label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>User</label>
             <select value={filters.user_id} onChange={e=>setFilters(p=>({...p,user_id:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,background:"#fff"}}>
@@ -2505,9 +2520,9 @@ const AuditLog = () => {
           <button onClick={clearFilters} disabled={!hasActiveFilters} style={{padding:"7px 14px",background:hasActiveFilters?"#f0f0f0":"#fafafa",border:"none",borderRadius:6,cursor:hasActiveFilters?"pointer":"not-allowed",fontSize:12,fontWeight:600,color:hasActiveFilters?"#555":"#bbb"}}>Clear</button>
         </div>
       </div>
-      <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+      <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
         {loading && logs.length===0 ? <Loading/> : (
-          <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
             <thead><tr><TH c="When"/><TH c="User"/><TH c="Action"/><TH c="Entity"/><TH c="Target"/><TH c="Details"/></tr></thead>
             <tbody>
               {logs.length===0 ? <tr><td colSpan={6} style={{textAlign:"center",padding:40,color:"#aaa"}}>No audit entries match.</td></tr> :
@@ -2569,7 +2584,7 @@ const BottomNav = ({active,onNav,nav}) => {
   return (
     <>
       {moreOpen && <div onClick={()=>setMoreOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:99}}/>}
-      {moreOpen && <div style={{position:"fixed",bottom:64,left:0,right:0,background:"#fff",borderTopLeftRadius:16,borderTopRightRadius:16,boxShadow:"0 -8px 30px rgba(0,0,0,0.2)",zIndex:101,padding:"12px 8px 16px",maxHeight:"60vh",overflowY:"auto"}}>
+      {moreOpen && <div style={{position:"fixed",bottom:"calc(64px + env(safe-area-inset-bottom, 0px))",left:0,right:0,background:"#fff",borderTopLeftRadius:16,borderTopRightRadius:16,boxShadow:"0 -8px 30px rgba(0,0,0,0.2)",zIndex:101,padding:"12px 8px 16px",maxHeight:"60vh",overflowY:"auto"}}>
         <div style={{width:42,height:4,background:"#e0e0e0",borderRadius:2,margin:"0 auto 12px"}}/>
         {overflow.map(item=>(
           <button key={item.id} onClick={()=>{setMoreOpen(false);onNav(item.id);}} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px 16px",background:active===item.id?"#fef0ee":"#fff",border:"none",color:active===item.id?"#c0392b":"#1a1a2e",cursor:"pointer",fontSize:15,fontWeight:600,borderRadius:8}}>
