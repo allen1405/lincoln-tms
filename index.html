@@ -10,7 +10,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- Pinned exact: a floating @2 tag resolves to latest-on-cache-miss, so an upstream
+     release could break production with no commit on our side. Bump deliberately. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.1"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 /* Reserve scrollbar space at all times so the viewport width doesn't change when content
@@ -770,7 +772,6 @@ const WorkOrders = () => {
   const [newCustModal,setNewCustModal]=useState(false);
   const [equipModal,setEquipModal]=useState(null);
   const [newCust,setNewCust]=useState({name:"",address:"",phone:"",email:"",notes:"",mc_number:"",dot_number:"",truck_count:"",trailer_count:""});
-  const [notesModal,setNotesModal]=useState(null);
   const [notesList,setNotesList]=useState([]); const [noteText,setNoteText]=useState("");
   const [jobsModal,setJobsModal]=useState(null);
   const [jobsList,setJobsList]=useState([]); const [jobTab,setJobTab]=useState("jobs");
@@ -902,14 +903,6 @@ const WorkOrders = () => {
     if(!r)return;
     audit(user,"delete","work_order",id,`${id} — ${prev?.customer||""} (${prev?.unit_number||""})`);
     loadWos();
-  };
-  const openNotes=async(wo)=>{setNotesModal(wo);await loadNotes(wo.id);};
-  const addNote=async()=>{
-    if(!noteText.trim()) return;
-    const r=await must(sb.from('notes').insert([{work_order_id:notesModal.id,customer_name:notesModal.customer,content:noteText.trim(),created_by:user.name}]),"Could not add note");
-    if(!r)return;
-    audit(user,"create","note",notesModal.id,`${notesModal.id} — ${notesModal.customer}`,noteText.trim().slice(0,120));
-    setNoteText(""); loadNotes(notesModal.id);
   };
   const loadJobs=async(woId)=>{const{data}=await sb.from('jobs').select('*').eq('work_order_id',woId).order('created_at');setJobsList(data||[]);};
   const loadParts=async(woId)=>{const{data}=await sb.from('parts').select('*').eq('work_order_id',woId).order('created_at');setPartsList(data||[]);};
@@ -1743,22 +1736,6 @@ const WorkOrders = () => {
         </Modal>
       )}
 
-      {notesModal&&(
-        <Modal title={`Notes — ${notesModal.id} (${notesModal.customer})`} onClose={()=>{setNotesModal(null);setNoteText("");}}>
-          <div style={{maxHeight:300,overflowY:"auto",marginBottom:16}}>
-            {notesList.length===0?<p style={{color:"#aaa",fontSize:13}}>No notes yet.</p>:notesList.map(n=>(
-              <div key={n.id} style={{background:"#f8f9fa",borderRadius:8,padding:12,marginBottom:8}}>
-                <div style={{fontSize:14,color:"#1a1a2e",marginBottom:6}}>{n.content}</div>
-                <div style={{fontSize:11,color:"#888"}}>👤 <strong>{n.created_by}</strong> · {fmtDate(n.created_at)}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{borderTop:"1px solid #eee",paddingTop:16}}>
-            <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} placeholder="Add a note..." rows={3} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,resize:"vertical",marginBottom:8}}/>
-            <button onClick={addNote} style={{padding:"9px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add Note</button>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 };
@@ -2419,7 +2396,7 @@ const Invoices = () => {
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
   useEffect(()=>{sb.from('work_orders').select('*').eq('status','Done').neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
-  return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Invoices</h1><Btn label="Create" onClick={()=>{}} color="#c0392b"/></div>
+  return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Invoices</h1></div>
     <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
       <thead><tr><TH c="Invoice Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/><TH c="Status"/></tr></thead>
       <tbody>{wos.length===0?<tr><td colSpan={6} style={{textAlign:"center",padding:40,color:"#aaa"}}>No completed WOs yet.</td></tr>:wos.map((w,i)=>(
@@ -2438,7 +2415,7 @@ const Estimates = () => {
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
   useEffect(()=>{sb.from('work_orders').select('*').in('status',['Waiting list','Inspection']).neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
-  return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1><Btn label="Create" onClick={()=>{}} color="#c0392b"/></div>
+  return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1></div>
     <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
       <thead><tr><TH c="Estimate Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/></tr></thead>
       <tbody>{wos.length===0?<tr><td colSpan={5} style={{textAlign:"center",padding:40,color:"#aaa"}}>No estimates found.</td></tr>:wos.map((w,i)=>(

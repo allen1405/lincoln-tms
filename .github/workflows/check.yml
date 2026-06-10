@@ -1,0 +1,23 @@
+# Push = instant production deploy (GitHub Pages serves main), so this is the only net
+# between a JSX typo and a white screen in the shop. It can't block the deploy (Pages
+# doesn't wait for checks on this plan) but it emails/red-Xs within a minute of a bad push.
+name: Check
+on: [push, pull_request]
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Extract and parse-check the app JSX
+        run: |
+          python3 - <<'EOF'
+          import re, pathlib
+          src = pathlib.Path("index.html").read_text()
+          m = re.search(r'<script type="text/babel">(.*?)</script>', src, re.S)
+          assert m, "no babel script block found"
+          pathlib.Path("app.jsx").write_text(m.group(1))
+          EOF
+          npx --yes esbuild app.jsx --loader:.jsx=jsx --outfile=app.out.js
