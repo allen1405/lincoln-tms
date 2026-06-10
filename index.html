@@ -273,14 +273,17 @@ const Modal = ({title,onClose,children,wide}) => {
     </div>
   );
 };
-const Field = ({label,value,onChange,type="text",options,required,placeholder}) => (
+const Field = ({label,value,onChange,type="text",options,required,placeholder,autoComplete,inputMode}) => {
+  const id = React.useId();
+  return (
   <div style={{marginBottom:14}}>
-    <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>{label}{required&&<span style={{color:"#c0392b"}}> *</span>}</label>
-    {options ? <select value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>{options.map(o=><option key={o} value={o}>{o}</option>)}</select>
-    : type==="textarea" ? <textarea value={value} onChange={e=>onChange(e.target.value)} rows={3} placeholder={placeholder||""} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,resize:"vertical"}}/>
-    : <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||""} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14}}/>}
+    <label htmlFor={id} style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>{label}{required&&<span style={{color:"#c0392b"}}> *</span>}</label>
+    {options ? <select id={id} value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>{options.map(o=><option key={o} value={o}>{o}</option>)}</select>
+    : type==="textarea" ? <textarea id={id} value={value} onChange={e=>onChange(e.target.value)} rows={3} placeholder={placeholder||""} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,resize:"vertical"}}/>
+    : <input id={id} type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||""} autoComplete={autoComplete} inputMode={inputMode} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14}}/>}
   </div>
-);
+  );
+};
 // ─── PHOTOS ───────────────────────────────────────────────────────────────────
 // Client-side resize to keep storage + bandwidth reasonable. Returns a Blob.
 const resizePhoto = (file, maxWidth = 1600, quality = 0.85) => new Promise((resolve, reject) => {
@@ -394,7 +397,11 @@ const Login = ({onLogin}) => {
     setLoading(true); setErr("");
     const {data,error} = await sb.from('users').select('*').eq('email',email).eq('password',pass).eq('active',true).single();
     setLoading(false);
-    if(data) onLogin(data); else setErr("Incorrect email or password.");
+    if(data){onLogin(data);return;}
+    // PGRST116 = no matching row (bad credentials). Anything else is a connection/server
+    // problem — don't tell the user their password is wrong when the Wi-Fi dropped.
+    if(error&&error.code!=="PGRST116"){setErr("Connection problem — check the internet and try again.");return;}
+    setErr("Incorrect email or password.");
   };
   return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -405,11 +412,13 @@ const Login = ({onLogin}) => {
           <p style={{margin:0,color:"#888",fontSize:14}}>Shop Management System</p>
         </div>
         {err&&<div style={{background:"#fdecea",color:"#c0392b",padding:"10px 14px",borderRadius:8,fontSize:13,marginBottom:16}}>{err}</div>}
-        <Field label="Email" value={email} onChange={setEmail} type="email" required/>
-        <Field label="Password" value={pass} onChange={setPass} type="password" required/>
-        <button onClick={go} disabled={loading} style={{width:"100%",padding:13,background:"linear-gradient(135deg,#c0392b,#e74c3c)",color:"#fff",border:"none",borderRadius:10,fontSize:15,fontWeight:700,cursor:"pointer",marginTop:8,opacity:loading?0.7:1}}>
-          {loading?"Logging in...":"Login"}
-        </button>
+        <form onSubmit={e=>{e.preventDefault();if(!loading)go();}}>
+          <Field label="Email" value={email} onChange={setEmail} type="email" required autoComplete="email"/>
+          <Field label="Password" value={pass} onChange={setPass} type="password" required autoComplete="current-password"/>
+          <button type="submit" disabled={loading} style={{width:"100%",padding:13,background:"linear-gradient(135deg,#c0392b,#e74c3c)",color:"#fff",border:"none",borderRadius:10,fontSize:15,fontWeight:700,cursor:"pointer",marginTop:8,opacity:loading?0.7:1}}>
+            {loading?"Logging in...":"Login"}
+          </button>
+        </form>
       </div>
     </div>
   );
@@ -477,7 +486,7 @@ const Dashboard = ({onNav}) => {
   useEffect(()=>{
     Promise.all([
       sb.from('work_orders').select('*').neq('is_voided',true).order('created_at',{ascending:false}),
-      sb.from('customers').select('*'),
+      sb.from('customers').select('*').order('created_at',{ascending:false}),
       sb.from('reminders').select('*').eq('completed',false).lt('reminder_date',todayLocal()),
       sb.from('jobs').select('work_order_id,mechanic')
     ]).then(([w,c,r,j])=>{setWos(w.data||[]);setCusts(c.data||[]);setReminders(r.data||[]);setJobs(j.data||[]);setLoading(false);});
@@ -787,7 +796,8 @@ const WorkOrders = () => {
   const isMine=w=>(w.mechanic||"").toLowerCase()===myName || (jobsByWo[w.id]||[]).some(j=>(j.mechanic||"").toLowerCase()===myName);
   const filtered=wos.filter(w=>{
     if(shopActive && !isMine(w)) return false;
-    return w.id.toLowerCase().includes(search.toLowerCase())||w.customer.toLowerCase().includes(search.toLowerCase())||w.unit_number.toLowerCase().includes(search.toLowerCase());
+    const q=search.toLowerCase();
+    return (w.id||"").toLowerCase().includes(q)||(w.customer||"").toLowerCase().includes(q)||(w.unit_number||"").toLowerCase().includes(q);
   });
   const jobStatusColor=s=>({"Pending":"#2980b9","In progress":"#8e44ad","Waiting for parts":"#ca6f1e","Done":"#27ae60"})[s]||"#888";
   const partStatusColor=s=>({"Pending Order":"#ca6f1e","Ordered":"#2980b9","On Stock":"#27ae60"})[s]||"#888";
@@ -2376,7 +2386,7 @@ const Invoices = () => {
       <thead><tr><TH c="Invoice Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/><TH c="Status"/></tr></thead>
       <tbody>{wos.length===0?<tr><td colSpan={6} style={{textAlign:"center",padding:40,color:"#aaa"}}>No completed WOs yet.</td></tr>:wos.map((w,i)=>(
         <tr key={w.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>INV-{String(i+1).padStart(3,"0")}</td>
+          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>INV-{String(w.id).replace(/^WO-?/,"")}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.id}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.customer}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.unit_number}</td>
@@ -2395,7 +2405,7 @@ const Estimates = () => {
       <thead><tr><TH c="Estimate Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/></tr></thead>
       <tbody>{wos.length===0?<tr><td colSpan={5} style={{textAlign:"center",padding:40,color:"#aaa"}}>No estimates found.</td></tr>:wos.map((w,i)=>(
         <tr key={w.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>EST-{String(i+1).padStart(3,"0")}</td>
+          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>EST-{String(w.id).replace(/^WO-?/,"")}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.id}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.customer}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.unit_number}</td>
@@ -2416,20 +2426,29 @@ const AuditLog = () => {
   const [filters,setFilters] = useState({user_id:"",entity_type:"",action:"",from:"",to:""});
   const PAGE = 100;
 
+  const reqId = React.useRef(0);
+
   const buildQuery = (append) => {
-    let q = sb.from('audit_log').select('*').order('created_at',{ascending:false}).limit(PAGE+1);
+    let q = sb.from('audit_log').select('*').order('created_at',{ascending:false}).order('id',{ascending:false}).limit(PAGE+1);
     if(filters.user_id) q = q.eq('user_id', filters.user_id);
     if(filters.entity_type) q = q.eq('entity_type', filters.entity_type);
     if(filters.action) q = q.eq('action', filters.action);
     if(filters.from) q = q.gte('created_at', filters.from);
     if(filters.to) q = q.lte('created_at', filters.to+'T23:59:59');
-    if(append && logs.length>0) q = q.lt('created_at', logs[logs.length-1].created_at);
+    if(append && logs.length>0){
+      // Keyset on (created_at, id): bulk actions log several rows in the same
+      // millisecond, so paging on created_at alone skipped boundary rows.
+      const last = logs[logs.length-1];
+      q = q.or(`created_at.lt.${last.created_at},and(created_at.eq.${last.created_at},id.lt.${last.id})`);
+    }
     return q;
   };
 
   const load = async (append=false) => {
+    const my = ++reqId.current;
     setLoading(true);
     const {data} = await buildQuery(append);
+    if(my !== reqId.current) return; // a newer load (filter change) superseded this one
     const got = data || [];
     setHasMore(got.length > PAGE);
     const trimmed = got.slice(0, PAGE);
@@ -2618,6 +2637,18 @@ const App = () => {
     if(shopActive && !activeNav.some(n=>n.id===page)) setPage(activeNav[0]?.id || "workorders");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[shopActive]);
+  // Re-validate the restored session on load — without this a deactivated employee's
+  // tablet stays logged in (with their old role) until they voluntarily log out.
+  useEffect(()=>{
+    const u=loadSession();
+    if(!u?.id) return;
+    sb.from('users').select('id,name,email,role,active').eq('id',u.id).maybeSingle().then(({data,error})=>{
+      if(error) return; // offline — keep the session rather than locking the shop out
+      if(!data||!data.active) setUser(null);
+      else if(data.role!==u.role||data.name!==u.name||data.email!==u.email) setUser(data);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
   if(!user) return <Login onLogin={setUser}/>;
   const pages = {
     dashboard:<Dashboard onNav={setPage}/>,workorders:<WorkOrders/>,customers:<Customers/>,
