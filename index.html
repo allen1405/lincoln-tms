@@ -321,19 +321,25 @@ const resizePhoto = (file, maxWidth = 1600, quality = 0.85) => new Promise((reso
 });
 
 // Reusable photo grid + uploader. Drop wherever an entity needs photos.
-const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = false}) => {
+// Self-fetches by default. Pass `photos` (+`onChanged`) to feed it from a parent batch
+// query instead — rendering one PhotoSection per row used to fire one Supabase query
+// each (the DOT tab opened with ~44 simultaneous queries).
+const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = false, photos: photosProp, onChanged}) => {
   const user = useContext(UserCtx);
-  const [photos, setPhotos] = useState([]);
+  const managed = photosProp === undefined; // self-fetching mode
+  const [photos, setPhotos] = useState(photosProp || []);
   const [uploading, setUploading] = useState(false);
   const [lightbox, setLightbox] = useState(null);
   const inputRef = React.useRef(null);
 
   const load = async () => {
+    if (!managed) { if (onChanged) onChanged(); return; }
     if (!entityId) { setPhotos([]); return; }
     const {data} = await sb.from('photos').select('*').eq('entity_type', entityType).eq('entity_id', String(entityId)).order('created_at', {ascending: false});
     setPhotos(data || []);
   };
-  useEffect(() => { load(); }, [entityType, entityId]);
+  useEffect(() => { if (managed) load(); }, [entityType, entityId]);
+  useEffect(() => { if (!managed) setPhotos(photosProp || []); }, [photosProp]);
 
   const handleFiles = async (fileList) => {
     if (!fileList || fileList.length === 0 || !entityId) return;
@@ -380,7 +386,7 @@ const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = fa
       <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
         {photos.map(p => (
           <div key={p.id} style={{position:"relative",width:tile,height:tile,borderRadius:8,overflow:"hidden",background:"#f0f0f0",border:"1px solid #e0e0e0"}}>
-            <img src={p.public_url} alt={p.caption||""} onClick={()=>setLightbox(p)} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer",display:"block"}}/>
+            <img src={p.public_url} alt={p.caption||""} loading="lazy" decoding="async" onClick={()=>setLightbox(p)} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer",display:"block"}}/>
             <button className="icon-xs" onClick={()=>del(p)} title="Delete" style={{position:"absolute",top:2,right:2,width:24,height:24,padding:0,background:"rgba(192,57,43,0.92)",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontSize:12,lineHeight:1}}>×</button>
           </div>
         ))}
@@ -779,6 +785,7 @@ const WorkOrders = () => {
   const [shopSupply,setShopSupply]=useState("");
   const shopSupplySaved=React.useRef("");
   const [dot,setDot]=useState(null);
+  const [dotPhotos,setDotPhotos]=useState({}); // entity_id ("WOID__componentkey") → photos[]
   const [woReminders,setWoReminders]=useState([]);
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
   const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
@@ -907,7 +914,7 @@ const WorkOrders = () => {
   const loadJobs=async(woId)=>{const{data}=await sb.from('jobs').select('*').eq('work_order_id',woId).order('created_at');setJobsList(data||[]);};
   const loadParts=async(woId)=>{const{data}=await sb.from('parts').select('*').eq('work_order_id',woId).order('created_at');setPartsList(data||[]);};
   const loadWoReminders=async(woId)=>{const{data}=await sb.from('reminders').select('*').eq('work_order_id',woId).order('created_at',{ascending:false});setWoReminders(data||[]);};
-  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadWoReminders(wo.id)]);};
+  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id)]);};
   const saveWoReminder=async()=>{
     const t=(remForm.note||"").trim(); if(!t)return;
     const payload={customer_name:jobsModal.customer,equipment_label:jobsModal.unit_number||"",work_order_id:jobsModal.id,reminder_date:remForm.reminder_date||null,note:t,created_by:user.name};
@@ -933,6 +940,12 @@ const WorkOrders = () => {
   const loadDot=async(wo)=>{
     const{data}=await sb.from('dot_inspections').select('*').eq('work_order_id',wo.id).maybeSingle();
     setDot(data?{...data,components:data.components||{}}:blankDot(wo));
+  };
+  // One query for all 44 DOT component rows instead of one per PhotoSection.
+  const loadDotPhotos=async(woId)=>{
+    const{data}=await sb.from('photos').select('*').eq('entity_type','dot_item').like('entity_id',`${woId}__%`).order('created_at',{ascending:false});
+    const m={};(data||[]).forEach(p=>{(m[p.entity_id]=m[p.entity_id]||[]).push(p);});
+    setDotPhotos(m);
   };
   const setDotField=(k,v)=>setDot(p=>({...p,[k]:v}));
   const setDotComp=(key,field,v)=>setDot(p=>({...p,components:{...p.components,[key]:{...(p.components[key]||{status:"",note:""}),[field]:v}}}));
@@ -1661,7 +1674,7 @@ const WorkOrders = () => {
                               })}
                             </div>
                             <input type="date" value={cv.repaired_date||""} onChange={e=>setDotComp(it.key,"repaired_date",e.target.value)} title="Repaired date" style={{padding:"6px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:12,minHeight:40,maxWidth:170}}/>
-                            <PhotoSection entityType="dot_item" entityId={`${jobsModal.id}__${it.key}`} compact={true}/>
+                            <PhotoSection entityType="dot_item" entityId={`${jobsModal.id}__${it.key}`} compact={true} photos={dotPhotos[`${jobsModal.id}__${it.key}`]||[]} onChanged={()=>loadDotPhotos(jobsModal.id)}/>
                           </div>
                         </div>
                       );
@@ -1766,7 +1779,15 @@ const Customers = () => {
   const [custEquipment,setCustEquipment]=useState([]);
   const [custWos,setCustWos]=useState([]);
   const [custRemForm,setCustRemForm]=useState({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});
-  const load=async()=>{const{data}=await sb.from('customers').select('*').order('created_at',{ascending:false});setList(data||[]);setLoading(false);};
+  const [custPhotos,setCustPhotos]=useState({}); // customer id (string) → photos[]
+  // One query for all customer cards instead of one per PhotoSection.
+  const loadCustPhotos=async(ids)=>{
+    if(!ids.length){setCustPhotos({});return;}
+    const{data}=await sb.from('photos').select('*').eq('entity_type','customer').in('entity_id',ids.map(String)).order('created_at',{ascending:false});
+    const m={};(data||[]).forEach(p=>{(m[p.entity_id]=m[p.entity_id]||[]).push(p);});
+    setCustPhotos(m);
+  };
+  const load=async()=>{const{data}=await sb.from('customers').select('*').order('created_at',{ascending:false});setList(data||[]);setLoading(false);loadCustPhotos((data||[]).map(c=>c.id));};
   const loadPaid=async()=>{
     const{data}=await sb.from('work_orders').select('customer').eq('status','Paid').eq('is_voided',false);
     const map={};(data||[]).forEach(w=>{map[w.customer]=(map[w.customer]||0)+1;});
@@ -1874,7 +1895,7 @@ const Customers = () => {
               </div>
             </div>
             <div style={{marginTop:10}}>
-              <PhotoSection entityType="customer" entityId={c.id} compact={true} label="Customer photos"/>
+              <PhotoSection entityType="customer" entityId={c.id} compact={true} label="Customer photos" photos={custPhotos[String(c.id)]||[]} onChanged={load}/>
             </div>
           </div>
         ))}
