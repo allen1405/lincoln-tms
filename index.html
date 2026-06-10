@@ -129,6 +129,14 @@ const audit = (user, action, entity_type, entity_id, entity_label, details = "")
     details: details || ''
   }]).then(r => { if (r.error) console.error('audit:', r.error); });
 };
+// Run a Supabase write and surface failures (supabase-js resolves with {error} instead of
+// throwing, so unchecked writes fail silently on bad Wi-Fi). Returns the result on
+// success, null on failure — callers bail on falsy and must only audit() after success.
+const must = async (q, msg) => {
+  const r = await q;
+  if (r.error) { alert(msg + ": " + r.error.message); return null; }
+  return r;
+};
 const AUDIT_ACTIONS = ["create","update","delete","status_change"];
 const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply","dot_inspection","photo"];
 
@@ -311,7 +319,8 @@ const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = fa
         const up = await sb.storage.from('tms-photos').upload(path, blob, {contentType: 'image/jpeg', upsert: false});
         if (up.error) { alert("Upload failed: " + up.error.message); continue; }
         const pub = sb.storage.from('tms-photos').getPublicUrl(path).data.publicUrl;
-        await sb.from('photos').insert([{entity_type: entityType, entity_id: String(entityId), storage_path: path, public_url: pub, uploaded_by: user?.name || ""}]);
+        const ins = await sb.from('photos').insert([{entity_type: entityType, entity_id: String(entityId), storage_path: path, public_url: pub, uploaded_by: user?.name || ""}]);
+        if (ins.error) { await sb.storage.from('tms-photos').remove([path]); alert("Photo record failed: " + ins.error.message); continue; }
         audit(user, "create", "photo", null, `${entityType} ${entityId}`, safeName);
       }
       await load();
@@ -323,8 +332,10 @@ const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = fa
 
   const del = async (p) => {
     if (!confirm("Delete this photo?")) return;
-    await sb.storage.from('tms-photos').remove([p.storage_path]);
-    await sb.from('photos').delete().eq('id', p.id);
+    const rm = await must(sb.storage.from('tms-photos').remove([p.storage_path]), "Could not delete photo file");
+    if (!rm) return;
+    const r = await must(sb.from('photos').delete().eq('id', p.id), "Could not delete photo record");
+    if (!r) return;
     audit(user, "delete", "photo", p.id, `${entityType} ${entityId}`);
     load();
   };
@@ -578,7 +589,8 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const del=async(id)=>{
     if(!confirm("Delete this equipment?"))return;
     const prev=list.find(e=>e.id===id);
-    await sb.from('equipment').delete().eq('id',id);
+    const r=await must(sb.from('equipment').delete().eq('id',id),"Could not delete equipment");
+    if(!r)return;
     audit(user,"delete","equipment",id,`${customerName} — ${prev?.type||""} ${prev?.year||""} ${prev?.make||""} ${prev?.model||""}`.trim());
     load();
   };
@@ -586,13 +598,15 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const addReminder=async()=>{
     if(!remForm.note) return;
     const eqLabel=`${viewEquip.year} ${viewEquip.make} ${viewEquip.model||viewEquip.type} (${viewEquip.vin||'no VIN'})`;
-    const {data:inserted}=await sb.from('reminders').insert([{equipment_id:viewEquip.id,customer_name:customerName,equipment_label:eqLabel,note:remForm.note,reminder_date:remForm.reminder_date||null,auto_days:remForm.auto_days?Number(remForm.auto_days):null,created_by:user.name}]).select().single();
+    const {data:inserted,error}=await sb.from('reminders').insert([{equipment_id:viewEquip.id,customer_name:customerName,equipment_label:eqLabel,note:remForm.note,reminder_date:remForm.reminder_date||null,auto_days:remForm.auto_days?Number(remForm.auto_days):null,created_by:user.name}]).select().single();
+    if(error){alert("Could not save reminder: "+error.message);return;}
     audit(user,"create","reminder",inserted?.id,`${customerName} — ${eqLabel}`,remForm.note.slice(0,120));
     setRemForm({note:"",reminder_date:"",auto_days:""}); setAddingRem(false); loadReminders(viewEquip.id);
   };
   const completeRem=async(id)=>{
     const prev=reminders.find(r=>r.id===id);
-    await sb.from('reminders').update({completed:true}).eq('id',id);
+    const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");
+    if(!r)return;
     audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
     loadReminders(viewEquip.id);
   };
@@ -723,6 +737,7 @@ const WorkOrders = () => {
   const PART_EMPTY={name:"",description:"",part_number:"",quantity:1,status:"Pending Order",eta_delivery:""};
   const [partForm,setPartForm]=useState(PART_EMPTY);
   const [shopSupply,setShopSupply]=useState("");
+  const shopSupplySaved=React.useRef("");
   const [dot,setDot]=useState(null);
   const [woReminders,setWoReminders]=useState([]);
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
@@ -817,7 +832,8 @@ const WorkOrders = () => {
   const addCustomer=async()=>{
     if(!newCust.name) return;
     const cleaned={...newCust,truck_count:newCust.truck_count===""?null:Number(newCust.truck_count),trailer_count:newCust.trailer_count===""?null:Number(newCust.trailer_count)};
-    const {data:inserted}=await sb.from('customers').insert([cleaned]).select().single();
+    const {data:inserted,error}=await sb.from('customers').insert([cleaned]).select().single();
+    if(error){alert("Could not save customer: "+error.message);return;}
     audit(user,"create","customer",inserted?.id,newCust.name);
     await loadCustomers();
     setForm(p=>({...p,customer:newCust.name}));
@@ -826,28 +842,31 @@ const WorkOrders = () => {
   };
   const upd=async(id,status)=>{
     const prev=wos.find(w=>w.id===id);
-    await sb.from('work_orders').update({status}).eq('id',id);
+    const r=await must(sb.from('work_orders').update({status}).eq('id',id),"Could not change status");
+    if(!r){loadWos();return;}
     audit(user,"status_change","work_order",id,`${id} — ${prev?.customer||""}`,`status: "${prev?.status||""}" → "${status}"`);
     loadWos();
   };
   const del=async(id)=>{
     if(!confirm("Delete this WO?"))return;
     const prev=wos.find(w=>w.id===id);
-    await sb.from('work_orders').delete().eq('id',id);
+    const r=await must(sb.from('work_orders').delete().eq('id',id),"Could not delete work order");
+    if(!r)return;
     audit(user,"delete","work_order",id,`${id} — ${prev?.customer||""} (${prev?.unit_number||""})`);
     loadWos();
   };
   const openNotes=async(wo)=>{setNotesModal(wo);await loadNotes(wo.id);};
   const addNote=async()=>{
     if(!noteText.trim()) return;
-    await sb.from('notes').insert([{work_order_id:notesModal.id,customer_name:notesModal.customer,content:noteText.trim(),created_by:user.name}]);
+    const r=await must(sb.from('notes').insert([{work_order_id:notesModal.id,customer_name:notesModal.customer,content:noteText.trim(),created_by:user.name}]),"Could not add note");
+    if(!r)return;
     audit(user,"create","note",notesModal.id,`${notesModal.id} — ${notesModal.customer}`,noteText.trim().slice(0,120));
     setNoteText(""); loadNotes(notesModal.id);
   };
   const loadJobs=async(woId)=>{const{data}=await sb.from('jobs').select('*').eq('work_order_id',woId).order('created_at');setJobsList(data||[]);};
   const loadParts=async(woId)=>{const{data}=await sb.from('parts').select('*').eq('work_order_id',woId).order('created_at');setPartsList(data||[]);};
   const loadWoReminders=async(woId)=>{const{data}=await sb.from('reminders').select('*').eq('work_order_id',woId).order('created_at',{ascending:false});setWoReminders(data||[]);};
-  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");setRemForm({id:null,reminder_date:"",note:""});await loadJobs(wo.id);await loadNotes(wo.id);await loadParts(wo.id);await loadDot(wo);await loadWoReminders(wo.id);};
+  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadWoReminders(wo.id)]);};
   const saveWoReminder=async()=>{
     const t=(remForm.note||"").trim(); if(!t)return;
     const payload={customer_name:jobsModal.customer,equipment_label:jobsModal.unit_number||"",work_order_id:jobsModal.id,reminder_date:remForm.reminder_date||null,note:t,created_by:user.name};
@@ -864,8 +883,8 @@ const WorkOrders = () => {
     loadWoReminders(jobsModal.id);
   };
   const editWoReminder=r=>setRemForm({id:r.id,reminder_date:r.reminder_date||"",note:r.note||""});
-  const completeWoReminder=async(id)=>{await sb.from('reminders').update({completed:true}).eq('id',id);audit(user,"status_change","reminder",id,`${jobsModal.id}`,`completed: false → true`);loadWoReminders(jobsModal.id);};
-  const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;await sb.from('reminders').delete().eq('id',id);audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
+  const completeWoReminder=async(id)=>{const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");if(!r)return;audit(user,"status_change","reminder",id,`${jobsModal.id}`,`completed: false → true`);loadWoReminders(jobsModal.id);};
+  const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
   const blankDot=(wo)=>{
     const cust=customers.find(c=>c.name===wo.customer);
     return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:cust?.address||"",city:"",state:"",zip:"",inspector:user.name||"",inspection_date:new Date().toISOString().split("T")[0],vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
@@ -993,20 +1012,23 @@ const WorkOrders = () => {
   };
   const addJob=async(name)=>{
     if(!name.trim()) return;
-    const {data:inserted}=await sb.from('jobs').insert([{work_order_id:jobsModal.id,name:name.trim(),status:"Pending",created_by:user.name}]).select().single();
+    const {data:inserted,error}=await sb.from('jobs').insert([{work_order_id:jobsModal.id,name:name.trim(),status:"Pending",created_by:user.name}]).select().single();
+    if(error){alert("Could not add job: "+error.message);return;}
     audit(user,"create","job",inserted?.id,`${jobsModal.id} — ${name.trim()}`);
     setNewJobName(""); setCustomJob(""); loadJobs(jobsModal.id);
   };
   const updJob=async(id,status)=>{
     const prev=jobsList.find(j=>j.id===id);
-    await sb.from('jobs').update({status}).eq('id',id);
+    const r=await must(sb.from('jobs').update({status}).eq('id',id),"Could not change job status");
+    if(!r){loadJobs(jobsModal.id);return;}
     audit(user,"status_change","job",id,`${jobsModal.id} — ${prev?.name||""}`,`status: "${prev?.status||""}" → "${status}"`);
     loadJobs(jobsModal.id);
   };
   const delJob=async(id)=>{
     const prev=jobsList.find(j=>j.id===id);
     if(!confirm(`Delete job "${prev?.name||""}"?`))return;
-    await sb.from('jobs').delete().eq('id',id);
+    const r=await must(sb.from('jobs').delete().eq('id',id),"Could not delete job");
+    if(!r)return;
     audit(user,"delete","job",id,`${jobsModal.id} — ${prev?.name||""}`);
     loadJobs(jobsModal.id);
   };
@@ -1042,19 +1064,26 @@ const WorkOrders = () => {
   };
   const updPart=async(id,field,val)=>{
     const prev=partsList.find(p=>p.id===id);
-    await sb.from('parts').update({[field]:val}).eq('id',id);
+    const r=await must(sb.from('parts').update({[field]:val}).eq('id',id),"Could not update part");
+    if(!r){loadParts(jobsModal.id);return;}
     audit(user,"update","part",id,`${jobsModal.id} — ${prev?.name||""}`,`${field}: "${prev?.[field]??""}" → "${val??""}"`);
     loadParts(jobsModal.id);
   };
   const delPart=async(id)=>{
     if(!confirm("Delete part?"))return;
     const prev=partsList.find(p=>p.id===id);
-    await sb.from('parts').delete().eq('id',id);
+    const r=await must(sb.from('parts').delete().eq('id',id),"Could not delete part");
+    if(!r)return;
     audit(user,"delete","part",id,`${jobsModal.id} — ${prev?.name||""}`);
     loadParts(jobsModal.id);
   };
   const saveShopSupply=async()=>{
-    await sb.from('work_orders').update({shop_supply:shopSupply}).eq('id',jobsModal.id);
+    // Skip when unchanged — the Save button blurs the textarea first, which would
+    // otherwise fire this twice (blur + click) and double-log the audit entry.
+    if(shopSupply===shopSupplySaved.current)return;
+    const r=await must(sb.from('work_orders').update({shop_supply:shopSupply}).eq('id',jobsModal.id),"Could not save shop supply");
+    if(!r)return;
+    shopSupplySaved.current=shopSupply;
     audit(user,"update","shop_supply",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`length: ${shopSupply.length} chars`);
   };
   const selEquip=(e)=>{
@@ -1364,7 +1393,8 @@ const WorkOrders = () => {
                                     onChange={async e=>{
                                       const v=e.target.value;
                                       if(v===(j.mechanic||""))return;
-                                      await sb.from('jobs').update({mechanic:v}).eq('id',j.id);
+                                      const r=await must(sb.from('jobs').update({mechanic:v}).eq('id',j.id),"Could not assign mechanic");
+                                      if(!r){loadJobs(jobsModal.id);return;}
                                       audit(user,"update","job",j.id,`${jobsModal.id} — ${j.name}`,`mechanic: "${j.mechanic||"—"}" → "${v||"—"}"`);
                                       loadJobs(jobsModal.id);
                                     }}
@@ -1383,8 +1413,12 @@ const WorkOrders = () => {
                                     onBlur={async e=>{
                                       const v=Number(e.target.value);
                                       if(v===Number(j.labor||0))return;
-                                      await sb.from('jobs').update({labor:v}).eq('id',j.id);
+                                      const r=await must(sb.from('jobs').update({labor:v}).eq('id',j.id),"Could not save labor");
+                                      if(!r){e.target.value=j.labor||0;return;}
                                       audit(user,"update","job",j.id,`${jobsModal.id} — ${j.name}`,`labor: ${j.labor||0}h → ${v}h`);
+                                      // Patch local state so the next edit compares against the saved value
+                                      // (and the tab-header hour total stays current).
+                                      setJobsList(l=>l.map(x=>x.id===j.id?{...x,labor:v}:x));
                                     }}
                                     style={{width:"100%",padding:"7px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13,background:"#f0faf4",fontWeight:600,color:"#27ae60"}}
                                   />
@@ -1396,8 +1430,10 @@ const WorkOrders = () => {
                                     onBlur={async e=>{
                                       const v=e.target.value;
                                       if(v===(j.notes||""))return;
-                                      await sb.from('jobs').update({notes:v}).eq('id',j.id);
+                                      const r=await must(sb.from('jobs').update({notes:v}).eq('id',j.id),"Could not save job notes");
+                                      if(!r){e.target.value=j.notes||"";return;}
                                       audit(user,"update","job",j.id,`${jobsModal.id} — ${j.name}`,`notes updated (${v.length} chars)`);
+                                      setJobsList(l=>l.map(x=>x.id===j.id?{...x,notes:v}:x));
                                     }}
                                     placeholder="Add details, parts needed, measurements..."
                                     rows={2}
@@ -1505,12 +1541,12 @@ const WorkOrders = () => {
               </div>
               <div style={{borderTop:"1px solid #eee",paddingTop:16}}>
                 <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} placeholder="Add a note..." rows={3} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,resize:"vertical",marginBottom:8}}/>
-                <button onClick={()=>{
+                <button onClick={async()=>{
                   const t=noteText.trim(); if(!t)return;
-                  sb.from('notes').insert([{work_order_id:jobsModal.id,customer_name:jobsModal.customer,content:t,created_by:user.name}]).then(()=>{
-                    audit(user,"create","note",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,t.slice(0,120));
-                    setNoteText("");loadNotes(jobsModal.id);
-                  });
+                  const r=await must(sb.from('notes').insert([{work_order_id:jobsModal.id,customer_name:jobsModal.customer,content:t,created_by:user.name}]),"Could not add note");
+                  if(!r)return;
+                  audit(user,"create","note",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,t.slice(0,120));
+                  setNoteText("");loadNotes(jobsModal.id);
                 }} style={{padding:"9px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add Note</button>
               </div>
             </div>
@@ -1732,8 +1768,8 @@ const Customers = () => {
     loadCustReminders(remTarget.name);
   };
   const editCustReminder=r=>setCustRemForm({id:r.id,equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||""});
-  const completeCustReminder=async(id)=>{await sb.from('reminders').update({completed:true}).eq('id',id);audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);loadCustReminders(remTarget.name);};
-  const delCustReminder=async(id)=>{if(!confirm("Delete reminder?"))return;await sb.from('reminders').delete().eq('id',id);audit(user,"delete","reminder",id,`${remTarget?.name||""}`);loadCustReminders(remTarget.name);if(custRemForm.id===id)setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});};
+  const completeCustReminder=async(id)=>{const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");if(!r)return;audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);loadCustReminders(remTarget.name);};
+  const delCustReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${remTarget?.name||""}`);loadCustReminders(remTarget.name);if(custRemForm.id===id)setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});};
   useEffect(()=>{load();loadPaid();loadRemCounts();},[]);
   const q=search.toLowerCase();
   const filtered=list.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.email||"").toLowerCase().includes(q)||(c.mc_number||"").toLowerCase().includes(q)||(c.dot_number||"").toLowerCase().includes(q));
@@ -1757,7 +1793,8 @@ const Customers = () => {
   const del=async(id)=>{
     if(!confirm("Delete customer?"))return;
     const prev=list.find(c=>c.id===id);
-    await sb.from('customers').delete().eq('id',id);
+    const r=await must(sb.from('customers').delete().eq('id',id),"Could not delete customer");
+    if(!r)return;
     audit(user,"delete","customer",id,prev?.name||"");
     load();
   };
@@ -1888,14 +1925,16 @@ const Appointments = () => {
   useEffect(()=>{load();sb.from('customers').select('name').order('name').then(({data})=>setCustomers(data||[]));},[]);
   const add=async()=>{
     if(!form.company)return;
-    const {data:inserted}=await sb.from('appointments').insert([form]).select().single();
+    const {data:inserted,error}=await sb.from('appointments').insert([form]).select().single();
+    if(error){alert("Could not add appointment: "+error.message);return;}
     audit(user,"create","appointment",inserted?.id,`${form.company} ${form.unit_number?`(${form.unit_number})`:""}`,`date: ${form.date||"—"}, status: ${form.status}`);
     setModal(false);setForm({company:"",unit_number:"",vin:"",date:"",status:"Scheduled"});load();
   };
   const del=async(id)=>{
     if(!confirm("Delete?"))return;
     const prev=list.find(a=>a.id===id);
-    await sb.from('appointments').delete().eq('id',id);
+    const r=await must(sb.from('appointments').delete().eq('id',id),"Could not delete appointment");
+    if(!r)return;
     audit(user,"delete","appointment",id,`${prev?.company||""} ${prev?.unit_number?`(${prev.unit_number})`:""}`);
     load();
   };
@@ -2016,14 +2055,16 @@ const RemindersPage = () => {
   };
   const complete=async(id)=>{
     const prev=list.find(r=>r.id===id);
-    await sb.from('reminders').update({completed:true}).eq('id',id);
+    const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");
+    if(!r)return;
     audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
     load();
   };
   const del=async(id)=>{
     if(!confirm("Delete reminder?"))return;
     const prev=list.find(r=>r.id===id);
-    await sb.from('reminders').delete().eq('id',id);
+    const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");
+    if(!r)return;
     audit(user,"delete","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`);
     load();
   };
@@ -2189,19 +2230,22 @@ const Settings = () => {
   useEffect(()=>{load();},[]);
   const add=async()=>{
     if(!form.name||!form.email||!form.password) return;
-    const {data:inserted}=await sb.from('users').insert([{...form,active:true}]).select().single();
+    const {data:inserted,error}=await sb.from('users').insert([{...form,active:true}]).select().single();
+    if(error){alert("Could not add user: "+error.message);return;}
     audit(currentUser,"create","user",inserted?.id,form.name,`email: ${form.email}, role: ${form.role}`);
     setModal(false);setForm({name:"",email:"",password:"",role:"mechanic"});load();
   };
   const toggleActive=async(u)=>{
-    await sb.from('users').update({active:!u.active}).eq('id',u.id);
+    const r=await must(sb.from('users').update({active:!u.active}).eq('id',u.id),"Could not update user");
+    if(!r)return;
     audit(currentUser,"status_change","user",u.id,u.name,`active: ${u.active} → ${!u.active}`);
     load();
   };
   const resetPass=async(u)=>{
     const np=prompt(`New password for ${u.name}:`);
     if(np){
-      await sb.from('users').update({password:np}).eq('id',u.id);
+      const r=await must(sb.from('users').update({password:np}).eq('id',u.id),"Could not reset password");
+      if(!r)return;
       audit(currentUser,"update","user",u.id,u.name,"password reset");
       alert("Password updated!");
     }
