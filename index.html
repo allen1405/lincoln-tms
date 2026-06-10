@@ -116,7 +116,10 @@ const viewportStore = (() => {
 })();
 const useViewport = () => {
   const [state, setState] = useState(viewportStore.get);
-  useEffect(() => viewportStore.sub(setState), []);
+  useEffect(() => {
+    setState(viewportStore.get()); // catch a change between first render and subscribing
+    return viewportStore.sub(setState);
+  }, []);
   return {
     width: state.width,
     isMobile: state.tier === "mobile",
@@ -380,10 +383,12 @@ const PhotoSection = ({entityType, entityId, label = "📷 Photos", compact = fa
 
   const del = async (p) => {
     if (!confirm("Delete this photo?")) return;
-    const rm = await must(sb.storage.from('tms-photos').remove([p.storage_path]), "Could not delete photo file");
-    if (!rm) return;
+    // DB row first, then the file — an orphaned storage file is invisible, but an
+    // orphaned record renders a broken thumbnail forever.
     const r = await must(sb.from('photos').delete().eq('id', p.id), "Could not delete photo record");
     if (!r) return;
+    const rm = await sb.storage.from('tms-photos').remove([p.storage_path]);
+    if (rm.error) console.error("photo file removal failed:", rm.error);
     audit(user, "delete", "photo", p.id, `${entityType} ${entityId}`);
     load();
   };
@@ -663,10 +668,15 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   };
   const completeRem=async(id)=>{
     const prev=reminders.find(r=>r.id===id);
-    const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");
+    // .eq('completed',false).select(): only the tap that actually flips the row audits
+    // and reschedules — a double-tap (or two devices) would otherwise insert the next
+    // auto-recurring occurrence twice.
+    const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");
     if(!r)return;
-    audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
-    await rescheduleAutoReminder(user,prev);
+    if(r.data&&r.data.length){
+      audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
+      await rescheduleAutoReminder(user,prev);
+    }
     loadReminders(viewEquip.id);
   };
   const label=e=>`${e.year||''} ${e.make||''} ${e.model||e.type}`.trim();
@@ -881,7 +891,9 @@ const WorkOrders = () => {
         sb.from('dot_inspections').update({work_order_id:id}).eq('work_order_id',editId)
       ];
       const dotPh=await sb.from('photos').select('id,entity_id').eq('entity_type','dot_item').like('entity_id',`${editId}__%`);
-      (dotPh.data||[]).forEach(p=>fixes.push(sb.from('photos').update({entity_id:id+p.entity_id.slice(String(editId).length)}).eq('id',p.id)));
+      // LIKE's _ is a single-char wildcard, so "WO-100__%" also matches "WO-1000__brakes" —
+      // filter to the exact prefix or we'd rewrite ANOTHER work order's photo links.
+      (dotPh.data||[]).filter(p=>p.entity_id.startsWith(`${editId}__`)).forEach(p=>fixes.push(sb.from('photos').update({entity_id:id+p.entity_id.slice(String(editId).length)}).eq('id',p.id)));
       const rs=await Promise.all(fixes);
       const bad=rs.find(r=>r.error);
       if(bad)alert("WO renumbered, but some linked records could not be updated: "+bad.error.message);
@@ -952,7 +964,7 @@ const WorkOrders = () => {
     loadWoReminders(jobsModal.id);
   };
   const editWoReminder=r=>setRemForm({id:r.id,reminder_date:r.reminder_date||"",note:r.note||""});
-  const completeWoReminder=async(id)=>{const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");if(!r)return;audit(user,"status_change","reminder",id,`${jobsModal.id}`,`completed: false → true`);loadWoReminders(jobsModal.id);};
+  const completeWoReminder=async(id)=>{const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");if(!r)return;if(r.data&&r.data.length)audit(user,"status_change","reminder",id,`${jobsModal.id}`,`completed: false → true`);loadWoReminders(jobsModal.id);};
   const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
   const blankDot=(wo)=>{
     const cust=customers.find(c=>c.name===wo.customer);
@@ -965,7 +977,7 @@ const WorkOrders = () => {
   // One query for all 44 DOT component rows instead of one per PhotoSection.
   const loadDotPhotos=async(woId)=>{
     const{data}=await sb.from('photos').select('*').eq('entity_type','dot_item').like('entity_id',`${woId}__%`).order('created_at',{ascending:false});
-    const m={};(data||[]).forEach(p=>{(m[p.entity_id]=m[p.entity_id]||[]).push(p);});
+    const m={};(data||[]).filter(p=>p.entity_id.startsWith(`${woId}__`)).forEach(p=>{(m[p.entity_id]=m[p.entity_id]||[]).push(p);});
     setDotPhotos(m);
   };
   const setDotField=(k,v)=>setDot(p=>({...p,[k]:v}));
@@ -1837,7 +1849,7 @@ const Customers = () => {
     loadCustReminders(remTarget.name);
   };
   const editCustReminder=r=>setCustRemForm({id:r.id,equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||""});
-  const completeCustReminder=async(id)=>{const prev=custReminders.find(x=>x.id===id);const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");if(!r)return;audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);await rescheduleAutoReminder(user,prev);loadCustReminders(remTarget.name);};
+  const completeCustReminder=async(id)=>{const prev=custReminders.find(x=>x.id===id);const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");if(!r)return;if(r.data&&r.data.length){audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);await rescheduleAutoReminder(user,prev);}loadCustReminders(remTarget.name);};
   const delCustReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${remTarget?.name||""}`);loadCustReminders(remTarget.name);if(custRemForm.id===id)setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});};
   useEffect(()=>{load();loadPaid();loadRemCounts();},[]);
   const q=search.toLowerCase();
@@ -1860,11 +1872,13 @@ const Customers = () => {
           sb.from('work_orders').update({customer:payload.name}).eq('customer',prev.name),
           sb.from('reminders').update({customer_name:payload.name}).eq('customer_name',prev.name),
           sb.from('equipment').update({customer_name:payload.name}).eq('customer_name',prev.name),
-          sb.from('appointments').update({company:payload.name}).eq('company',prev.name)
+          sb.from('appointments').update({company:payload.name}).eq('company',prev.name),
+          sb.from('notes').update({customer_name:payload.name}).eq('customer_name',prev.name)
         ]);
         const bad=rs.find(r=>r.error);
         if(bad)alert("Customer renamed, but some linked records could not be updated: "+bad.error.message);
-        audit(user,"update","customer",editId,payload.name,`renamed from "${prev.name}" (cascaded to WOs/reminders/equipment/appointments)`);
+        audit(user,"update","customer",editId,payload.name,`renamed from "${prev.name}" (cascaded to WOs/reminders/equipment/appointments/notes)`);
+        loadPaid();loadRemCounts(); // badge maps are keyed by name
       }else{
         audit(user,"update","customer",editId,form.name);
       }
@@ -2142,10 +2156,12 @@ const RemindersPage = () => {
   };
   const complete=async(id)=>{
     const prev=list.find(r=>r.id===id);
-    const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");
+    const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");
     if(!r)return;
-    audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
-    await rescheduleAutoReminder(user,prev);
+    if(r.data&&r.data.length){
+      audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
+      await rescheduleAutoReminder(user,prev);
+    }
     load();
   };
   const del=async(id)=>{
@@ -2728,7 +2744,7 @@ const App = () => {
       <div style={{display:"flex",minHeight:"100vh",background:"#f4f6f9"}}>
         {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav}/>}
         {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav}/>}
-        <main style={{marginLeft:sidebarWidth,flex:1,padding:mainPadding,minHeight:"100vh",paddingBottom:vp.isMobile?"calc(80px + env(safe-area-inset-bottom, 0px))":mainPadding}}>
+        <main style={{marginLeft:sidebarWidth,flex:1,minWidth:0,padding:mainPadding,minHeight:"100vh",paddingBottom:vp.isMobile?"calc(80px + env(safe-area-inset-bottom, 0px))":mainPadding}}>
           {!vp.isDesktop && <TopBar pageLabel={currentNav?.label||"TMS"} mode={mode} onToggleMode={()=>setMode(m=>m==="shop"?"full":"shop")} canToggle={canToggleMode} onRefresh={onRefresh} refreshing={refreshing}/>}
           <div key={`${page}-${refreshKey}`} style={{padding:vp.isMobile?12:0}}>{pages[page]||pages.dashboard}</div>
         </main>

@@ -18,7 +18,8 @@ language sql stable security definer set search_path = public as $$
     where auth_id = auth.uid() and role = 'admin' and active
   );
 $$;
-revoke all on function public.is_admin() from anon;
+revoke execute on function public.is_admin() from public, anon;
+grant execute on function public.is_admin() to authenticated;
 
 -- ── 3. Enable RLS on every table ─────────────────────────────────────────────────────
 alter table public.users            enable row level security;
