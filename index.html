@@ -239,6 +239,18 @@ const Badge = ({s}) => { const x=SC[s]||{bg:"#f0f0f0",c:"#666",b:"#ddd"}; return
 const Loading = () => <div style={{padding:60,textAlign:"center",color:"#888",fontSize:14}}>⏳ Loading...</div>;
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
 const fmtDay = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+// Local calendar date as YYYY-MM-DD. new Date().toISOString() is UTC — from ~6 PM
+// Central it already reads tomorrow, which flipped reminders overdue hours early.
+const ymdLocal = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const todayLocal = () => ymdLocal(new Date());
+const addDaysLocal = n => { const d=new Date(); d.setDate(d.getDate()+Number(n)); return ymdLocal(d); };
+// Auto-recurring reminders (auto_days): completing one schedules the next occurrence.
+const rescheduleAutoReminder = async (user, prev) => {
+  if (!prev?.auto_days) return;
+  const r = await sb.from('reminders').insert([{customer_name:prev.customer_name||null,equipment_id:prev.equipment_id||null,equipment_label:prev.equipment_label||null,work_order_id:prev.work_order_id||null,note:prev.note,auto_days:prev.auto_days,reminder_date:addDaysLocal(prev.auto_days),created_by:prev.created_by||null}]);
+  if (r.error) { alert("Could not schedule next reminder: " + r.error.message); return; }
+  audit(user,"create","reminder",null,`${prev.customer_name||""} — ${prev.equipment_label||""}`,`auto-rescheduled +${prev.auto_days} days`);
+};
 
 const Modal = ({title,onClose,children,wide}) => {
   const vp = useViewport();
@@ -466,7 +478,7 @@ const Dashboard = ({onNav}) => {
     Promise.all([
       sb.from('work_orders').select('*').neq('is_voided',true).order('created_at',{ascending:false}),
       sb.from('customers').select('*'),
-      sb.from('reminders').select('*').eq('completed',false).lte('reminder_date',new Date().toISOString().split('T')[0]),
+      sb.from('reminders').select('*').eq('completed',false).lt('reminder_date',todayLocal()),
       sb.from('jobs').select('work_order_id,mechanic')
     ]).then(([w,c,r,j])=>{setWos(w.data||[]);setCusts(c.data||[]);setReminders(r.data||[]);setJobs(j.data||[]);setLoading(false);});
   },[]);
@@ -598,7 +610,10 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const addReminder=async()=>{
     if(!remForm.note) return;
     const eqLabel=`${viewEquip.year} ${viewEquip.make} ${viewEquip.model||viewEquip.type} (${viewEquip.vin||'no VIN'})`;
-    const {data:inserted,error}=await sb.from('reminders').insert([{equipment_id:viewEquip.id,customer_name:customerName,equipment_label:eqLabel,note:remForm.note,reminder_date:remForm.reminder_date||null,auto_days:remForm.auto_days?Number(remForm.auto_days):null,created_by:user.name}]).select().single();
+    const autoDays=remForm.auto_days?Number(remForm.auto_days):null;
+    // "Auto (days from now)" implies a due date — without this the reminder never fires.
+    const remDate=remForm.reminder_date||(autoDays?addDaysLocal(autoDays):null);
+    const {data:inserted,error}=await sb.from('reminders').insert([{equipment_id:viewEquip.id,customer_name:customerName,equipment_label:eqLabel,note:remForm.note,reminder_date:remDate,auto_days:autoDays,created_by:user.name}]).select().single();
     if(error){alert("Could not save reminder: "+error.message);return;}
     audit(user,"create","reminder",inserted?.id,`${customerName} — ${eqLabel}`,remForm.note.slice(0,120));
     setRemForm({note:"",reminder_date:"",auto_days:""}); setAddingRem(false); loadReminders(viewEquip.id);
@@ -608,6 +623,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
     const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");
     if(!r)return;
     audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
+    await rescheduleAutoReminder(user,prev);
     loadReminders(viewEquip.id);
   };
   const label=e=>`${e.year||''} ${e.make||''} ${e.model||e.type}`.trim();
@@ -641,7 +657,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
           )}
           {reminders.length===0&&<p style={{color:"#aaa",fontSize:13}}>No reminders yet.</p>}
           {reminders.map(r=>(
-            <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":r.reminder_date&&r.reminder_date<new Date().toISOString().split('T')[0]?"#f5c6cb":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":"#fff"}}>
+            <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":r.reminder_date&&r.reminder_date<todayLocal()?"#f5c6cb":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":"#fff"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                 <div>
                   <div style={{fontWeight:600,fontSize:14,color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":""}}>{r.note}</div>
@@ -741,7 +757,7 @@ const WorkOrders = () => {
   const [dot,setDot]=useState(null);
   const [woReminders,setWoReminders]=useState([]);
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
-  const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:new Date().toISOString().split("T")[0],is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
+  const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [editId,setEditId]=useState(null);
   const [woErr,setWoErr]=useState("");
@@ -801,7 +817,7 @@ const WorkOrders = () => {
     closeWoModal();loadWos();
   };
   const openAdd=()=>{setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
-  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||new Date().toISOString().split("T")[0],is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
+  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
   const saveEdit=async()=>{
     const id=(form.id||"").trim();
@@ -887,7 +903,7 @@ const WorkOrders = () => {
   const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
   const blankDot=(wo)=>{
     const cust=customers.find(c=>c.name===wo.customer);
-    return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:cust?.address||"",city:"",state:"",zip:"",inspector:user.name||"",inspection_date:new Date().toISOString().split("T")[0],vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
+    return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:cust?.address||"",city:"",state:"",zip:"",inspector:user.name||"",inspection_date:todayLocal(),vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
   };
   const loadDot=async(wo)=>{
     const{data}=await sb.from('dot_inspections').select('*').eq('work_order_id',wo.id).maybeSingle();
@@ -1768,7 +1784,7 @@ const Customers = () => {
     loadCustReminders(remTarget.name);
   };
   const editCustReminder=r=>setCustRemForm({id:r.id,equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||""});
-  const completeCustReminder=async(id)=>{const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");if(!r)return;audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);loadCustReminders(remTarget.name);};
+  const completeCustReminder=async(id)=>{const prev=custReminders.find(x=>x.id===id);const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");if(!r)return;audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);await rescheduleAutoReminder(user,prev);loadCustReminders(remTarget.name);};
   const delCustReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${remTarget?.name||""}`);loadCustReminders(remTarget.name);if(custRemForm.id===id)setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});};
   useEffect(()=>{load();loadPaid();loadRemCounts();},[]);
   const q=search.toLowerCase();
@@ -1886,7 +1902,7 @@ const Customers = () => {
             </div>
           </div>
           {custReminders.length===0?<p style={{color:"#aaa",fontSize:13,textAlign:"center",padding:20}}>No reminders for this customer yet.</p>:custReminders.map(r=>{
-            const today=new Date().toISOString().split('T')[0];
+            const today=todayLocal();
             const overdue=!r.completed&&r.reminder_date&&r.reminder_date<today;
             return (
               <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":overdue?"#f5c6cb":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":overdue?"#fff5f5":"#fff"}}>
@@ -2008,7 +2024,7 @@ const RemindersPage = () => {
   };
   useEffect(()=>{load();},[]);
 
-  const today=new Date().toISOString().split('T')[0];
+  const today=todayLocal();
   const statusOf=r=>r.completed?"completed":(r.reminder_date&&r.reminder_date<today)?"overdue":"pending";
   const filtered=list.filter(r=>filter==="all"?true:filter==="pending"?!r.completed:filter==="overdue"?statusOf(r)==="overdue":r.completed);
 
@@ -2058,6 +2074,7 @@ const RemindersPage = () => {
     const r=await must(sb.from('reminders').update({completed:true}).eq('id',id),"Could not complete reminder");
     if(!r)return;
     audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
+    await rescheduleAutoReminder(user,prev);
     load();
   };
   const del=async(id)=>{
