@@ -146,6 +146,17 @@ const must = async (q, msg) => {
   if (r.error) { alert(msg + ": " + r.error.message); return null; }
   return r;
 };
+// Double-tap guard for create/save handlers — tablets register taps twice surprisingly
+// often, which inserted duplicate jobs/customers/notes. Usage: const guard=useOnce();
+// onClick={()=>guard(add)}. Re-entry while the wrapped call is in flight is ignored.
+const useOnce = () => {
+  const busy = React.useRef(false);
+  return async fn => {
+    if (busy.current) return;
+    busy.current = true;
+    try { await fn(); } finally { busy.current = false; }
+  };
+};
 const AUDIT_ACTIONS = ["create","update","delete","status_change"];
 const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply","dot_inspection","photo"];
 
@@ -590,6 +601,7 @@ const Dashboard = ({onNav}) => {
 // ─── EQUIPMENT MODAL ──────────────────────────────────────────────────────────
 const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const user = useContext(UserCtx);
+  const guard = useOnce();
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [adding,setAdding]=useState(false);
   const [editEqId,setEditEqId]=useState(null);
@@ -681,7 +693,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
                 <Field label="Auto (days from now)" value={remForm.auto_days} onChange={v=>setRemForm(p=>({...p,auto_days:v}))} type="number" placeholder="e.g. 90"/>
               </div>
               <div style={{display:"flex",gap:8}}>
-                <button onClick={addReminder} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Save Reminder</button>
+                <button onClick={()=>guard(addReminder)} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Save Reminder</button>
                 <button onClick={()=>setAddingRem(false)} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
               </div>
             </div>
@@ -724,7 +736,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
           </div>
           <Field label="Notes" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} type="textarea"/>
           <div style={{display:"flex",gap:8}}>
-            <button onClick={save} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{editEqId?"Save Changes":"Save Equipment"}</button>
+            <button onClick={()=>guard(save)} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{editEqId?"Save Changes":"Save Equipment"}</button>
             <button onClick={closeEqForm} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
           </div>
         </div>
@@ -760,6 +772,7 @@ const WorkOrders = () => {
   const user = useContext(UserCtx);
   const {shopActive} = useContext(ModeCtx);
   const vp = useViewport();
+  const guard = useOnce();
   const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
   const [jobLabor,setJobLabor]=useState({}); // work_order_id → summed job labor hours (real labor; w.labor column is unused here)
   const [jobsByWo,setJobsByWo]=useState({});
@@ -858,6 +871,21 @@ const WorkOrders = () => {
     // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
     const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
+    if(id!==editId){
+      // The FK cascade covers jobs/parts/notes, but photos are keyed by entity_id
+      // STRING ("work_order/<id>" and "dot_item <id>__<key>"), and reminders /
+      // dot_inspections may not cascade — fix them up so nothing detaches on renumber.
+      const fixes=[
+        sb.from('photos').update({entity_id:id}).eq('entity_type','work_order').eq('entity_id',editId),
+        sb.from('reminders').update({work_order_id:id}).eq('work_order_id',editId),
+        sb.from('dot_inspections').update({work_order_id:id}).eq('work_order_id',editId)
+      ];
+      const dotPh=await sb.from('photos').select('id,entity_id').eq('entity_type','dot_item').like('entity_id',`${editId}__%`);
+      (dotPh.data||[]).forEach(p=>fixes.push(sb.from('photos').update({entity_id:id+p.entity_id.slice(String(editId).length)}).eq('id',p.id)));
+      const rs=await Promise.all(fixes);
+      const bad=rs.find(r=>r.error);
+      if(bad)alert("WO renumbered, but some linked records could not be updated: "+bad.error.message);
+    }
     audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[id!==editId&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
   };
@@ -1342,7 +1370,7 @@ const WorkOrders = () => {
             </div>
             <div style={{display:"flex",gap:10}}>
               <button onClick={closeWoModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-              <button onClick={editId?saveEdit:add} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Create WO"}</button>
+              <button onClick={()=>guard(editId?saveEdit:add)} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Create WO"}</button>
             </div>
           </div>
         </Modal>
@@ -1363,7 +1391,7 @@ const WorkOrders = () => {
           <Field label="Notes" value={newCust.notes} onChange={v=>setNewCust(p=>({...p,notes:v}))} type="textarea"/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
             <button onClick={()=>setNewCustModal(false)} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-            <button onClick={addCustomer} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Save & Select</button>
+            <button onClick={()=>guard(addCustomer)} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Save & Select</button>
           </div>
         </Modal>
       )}
@@ -1398,14 +1426,14 @@ const WorkOrders = () => {
                 <div style={{fontSize:13,fontWeight:600,color:"#555",marginBottom:8}}>Quick Add:</div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>
                   {COMMON_JOBS.map(j=>(
-                    <button key={j} className="chip" onClick={()=>addJob(j)} style={{padding:"5px 12px",background:"#f0f0f0",border:"1px solid #ddd",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:500,color:"#444"}}>
+                    <button key={j} className="chip" onClick={()=>guard(()=>addJob(j))} style={{padding:"5px 12px",background:"#f0f0f0",border:"1px solid #ddd",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:500,color:"#444"}}>
                       + {j}
                     </button>
                   ))}
                 </div>
                 <div style={{display:"flex",gap:8}}>
-                  <input value={customJob} onChange={e=>setCustomJob(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addJob(customJob)} placeholder="Custom job name..." style={{flex:1,padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:13}}/>
-                  <button onClick={()=>addJob(customJob)} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add</button>
+                  <input value={customJob} onChange={e=>setCustomJob(e.target.value)} onKeyDown={e=>e.key==="Enter"&&guard(()=>addJob(customJob))} placeholder="Custom job name..." style={{flex:1,padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:13}}/>
+                  <button onClick={()=>guard(()=>addJob(customJob))} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add</button>
                 </div>
               </div>
               {jobsList.length===0?<p style={{color:"#aaa",fontSize:13,textAlign:"center",padding:20}}>No jobs added yet.</p>:(
@@ -1517,7 +1545,7 @@ const WorkOrders = () => {
                   </div>
                   <Field label="Description" value={partForm.description} onChange={v=>setPartForm(p=>({...p,description:v}))} type="textarea" placeholder="Additional details..."/>
                   <div style={{display:"flex",gap:8}}>
-                    <button onClick={savePart} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{editPartId?"Save Changes":"Save Part"}</button>
+                    <button onClick={()=>guard(savePart)} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{editPartId?"Save Changes":"Save Part"}</button>
                     <button onClick={closePartForm} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
                   </div>
                 </div>
@@ -1589,13 +1617,13 @@ const WorkOrders = () => {
               </div>
               <div style={{borderTop:"1px solid #eee",paddingTop:16}}>
                 <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} placeholder="Add a note..." rows={3} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,resize:"vertical",marginBottom:8}}/>
-                <button onClick={async()=>{
+                <button onClick={()=>guard(async()=>{
                   const t=noteText.trim(); if(!t)return;
                   const r=await must(sb.from('notes').insert([{work_order_id:jobsModal.id,customer_name:jobsModal.customer,content:t,created_by:user.name}]),"Could not add note");
                   if(!r)return;
                   audit(user,"create","note",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,t.slice(0,120));
                   setNoteText("");loadNotes(jobsModal.id);
-                }} style={{padding:"9px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add Note</button>
+                })} style={{padding:"9px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Add Note</button>
               </div>
             </div>
           )}
@@ -1704,7 +1732,7 @@ const WorkOrders = () => {
                 <Field label="Due date" value={remForm.reminder_date} onChange={v=>setRemForm(p=>({...p,reminder_date:v}))} type="date"/>
                 <Field label="Note" value={remForm.note} onChange={v=>setRemForm(p=>({...p,note:v}))} type="textarea" required placeholder="e.g. Call before delivery, DOT due..."/>
                 <div style={{display:"flex",gap:8}}>
-                  <button onClick={saveWoReminder} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{remForm.id?"Save Changes":"+ Add Reminder"}</button>
+                  <button onClick={()=>guard(saveWoReminder)} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{remForm.id?"Save Changes":"+ Add Reminder"}</button>
                   {remForm.id&&<button onClick={()=>setRemForm({id:null,reminder_date:"",note:""})} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel edit</button>}
                 </div>
               </div>
@@ -1743,6 +1771,7 @@ const WorkOrders = () => {
 // ─── CUSTOMERS ────────────────────────────────────────────────────────────────
 const Customers = () => {
   const user = useContext(UserCtx);
+  const guard = useOnce();
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
   const [equipTarget,setEquipTarget]=useState(null);
@@ -1820,9 +1849,25 @@ const Customers = () => {
     if(!form.name)return;
     const payload={...form,truck_count:form.truck_count===""||form.truck_count==null?null:Number(form.truck_count),trailer_count:form.trailer_count===""||form.trailer_count==null?null:Number(form.trailer_count)};
     if(editId){
+      const prev=list.find(c=>c.id===editId);
       const res=await sb.from('customers').update(payload).eq('id',editId);
       if(res.error){alert("Could not save: "+res.error.message);return;}
-      audit(user,"update","customer",editId,form.name);
+      if(prev&&prev.name!==payload.name){
+        // WOs, reminders, equipment, and appointments link to the customer by NAME
+        // string — without this cascade, renaming orphans every one of those links
+        // (contact card vanishes, badges reset, reminders detach).
+        const rs=await Promise.all([
+          sb.from('work_orders').update({customer:payload.name}).eq('customer',prev.name),
+          sb.from('reminders').update({customer_name:payload.name}).eq('customer_name',prev.name),
+          sb.from('equipment').update({customer_name:payload.name}).eq('customer_name',prev.name),
+          sb.from('appointments').update({company:payload.name}).eq('company',prev.name)
+        ]);
+        const bad=rs.find(r=>r.error);
+        if(bad)alert("Customer renamed, but some linked records could not be updated: "+bad.error.message);
+        audit(user,"update","customer",editId,payload.name,`renamed from "${prev.name}" (cascaded to WOs/reminders/equipment/appointments)`);
+      }else{
+        audit(user,"update","customer",editId,form.name);
+      }
     }else{
       const {data:inserted,error}=await sb.from('customers').insert([payload]).select().single();
       if(error){alert("Could not save: "+error.message);return;}
@@ -1893,7 +1938,7 @@ const Customers = () => {
           <Field label="Notes" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} type="textarea"/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
             <button onClick={closeModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-            <button onClick={save} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Add"}</button>
+            <button onClick={()=>guard(save)} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Add"}</button>
           </div>
         </Modal>
       )}
@@ -1921,7 +1966,7 @@ const Customers = () => {
             <Field label="Due date" value={custRemForm.reminder_date} onChange={v=>setCustRemForm(p=>({...p,reminder_date:v}))} type="date"/>
             <Field label="Note" value={custRemForm.note} onChange={v=>setCustRemForm(p=>({...p,note:v}))} type="textarea" required placeholder="e.g. Annual DOT inspection due, contact for service..."/>
             <div style={{display:"flex",gap:8}}>
-              <button onClick={saveCustReminder} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{custRemForm.id?"Save Changes":"+ Add Reminder"}</button>
+              <button onClick={()=>guard(saveCustReminder)} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>{custRemForm.id?"Save Changes":"+ Add Reminder"}</button>
               {custRemForm.id&&<button onClick={()=>setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""})} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel edit</button>}
             </div>
           </div>
@@ -1958,6 +2003,7 @@ const Customers = () => {
 // ─── APPOINTMENTS ─────────────────────────────────────────────────────────────
 const Appointments = () => {
   const user = useContext(UserCtx);
+  const guard = useOnce();
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
   const [customers,setCustomers]=useState([]); const [modal,setModal]=useState(false);
   const [form,setForm]=useState({company:"",unit_number:"",vin:"",date:"",status:"Scheduled"});
@@ -2012,7 +2058,7 @@ const Appointments = () => {
           </div>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:8}}>
             <button onClick={()=>setModal(false)} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-            <button onClick={add} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Add</button>
+            <button onClick={()=>guard(add)} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Add</button>
           </div>
         </Modal>
       )}
@@ -2024,6 +2070,7 @@ const Appointments = () => {
 const RemindersPage = () => {
   const user = useContext(UserCtx);
   const vp = useViewport();
+  const guard = useOnce();
   const [list,setList]=useState([]);
   const [customers,setCustomers]=useState([]);
   const [equipment,setEquipment]=useState([]);
@@ -2222,7 +2269,7 @@ const RemindersPage = () => {
           <Field label="Note" value={form.note} onChange={v=>setForm(p=>({...p,note:v}))} type="textarea" required placeholder="e.g. DOT inspection due, call for oil change..."/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
             <button onClick={closeModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-            <button onClick={save} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Create"}</button>
+            <button onClick={()=>guard(save)} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>{editId?"Save Changes":"Create"}</button>
           </div>
         </Modal>
       )}
@@ -2264,6 +2311,7 @@ const EmployeesPage = () => {
 // ─── SETTINGS ────────────────────────────────────────────────────────────────
 const Settings = () => {
   const currentUser = useContext(UserCtx);
+  const guard = useOnce();
   const [users,setUsers]=useState([]); const [loading,setLoading]=useState(true);
   const [modal,setModal]=useState(false);
   const [form,setForm]=useState({name:"",email:"",password:"",role:"mechanic"});
@@ -2326,7 +2374,7 @@ const Settings = () => {
           <Field label="Role" value={form.role} onChange={v=>setForm(p=>({...p,role:v}))} options={["mechanic","admin"]}/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
             <button onClick={()=>setModal(false)} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
-            <button onClick={add} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Add User</button>
+            <button onClick={()=>guard(add)} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>Add User</button>
           </div>
         </Modal>
       )}
