@@ -617,6 +617,8 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
   const [addingRem,setAddingRem]=useState(false);
   const [reminders,setReminders]=useState([]);
   const [activeTab,setActiveTab]=useState("history");
+  const [taskNote,setTaskNote]=useState("");
+  const [addingTask,setAddingTask]=useState(false);
 
   const load=async()=>{
     const{data}=await sb.from('equipment').select('*').eq('customer_id',customerId).order('created_at',{ascending:false});
@@ -666,6 +668,14 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
     audit(user,"create","reminder",inserted?.id,`${customerName} — ${eqLabel}`,remForm.note.slice(0,120));
     setRemForm({note:"",reminder_date:"",auto_days:""}); setAddingRem(false); loadReminders(viewEquip.id);
   };
+  const addTask=async()=>{
+    if(!taskNote.trim()) return;
+    const eqLabel=`${viewEquip.year} ${viewEquip.make} ${viewEquip.model||viewEquip.type} (${viewEquip.vin||'no VIN'})`;
+    const {data:inserted,error}=await sb.from('reminders').insert([{kind:'task',equipment_id:viewEquip.id,customer_name:customerName,equipment_label:eqLabel,note:taskNote.trim(),created_by:user.name}]).select().single();
+    if(error){alert("Could not save task: "+error.message);return;}
+    audit(user,"create","reminder",inserted?.id,`${customerName} — ${eqLabel}`,`task: ${taskNote.trim().slice(0,110)}`);
+    setTaskNote(""); setAddingTask(false); loadReminders(viewEquip.id);
+  };
   const completeRem=async(id)=>{
     const prev=reminders.find(r=>r.id===id);
     // .eq('completed',false).select(): only the tap that actually flips the row audits
@@ -680,12 +690,15 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
     loadReminders(viewEquip.id);
   };
   const label=e=>`${e.year||''} ${e.make||''} ${e.model||e.type}`.trim();
+  const eqReminders=reminders.filter(r=>r.kind!=='task');
+  const eqTasks=reminders.filter(r=>r.kind==='task');
 
   if(viewEquip) return (
     <Modal title={`${label(viewEquip)} — ${viewEquip.vin||'No VIN'}`} onClose={()=>setViewEquip(null)} wide>
       <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20,overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
         <button className={`tab-btn${activeTab==="history"?" active":""}`} onClick={()=>setActiveTab("history")}>🔧 Repair History</button>
-        <button className={`tab-btn${activeTab==="reminders"?" active":""}`} onClick={()=>setActiveTab("reminders")}>🔔 Reminders ({reminders.filter(r=>!r.completed).length})</button>
+        <button className={`tab-btn${activeTab==="reminders"?" active":""}`} onClick={()=>setActiveTab("reminders")}>🔔 Reminders ({eqReminders.filter(r=>!r.completed).length})</button>
+        <button className={`tab-btn${activeTab==="tasks"?" active":""}`} onClick={()=>setActiveTab("tasks")}>📋 Future Tasks ({eqTasks.filter(r=>!r.completed).length})</button>
       </div>
       {activeTab==="history"&&(
         <div>
@@ -708,8 +721,8 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
               </div>
             </div>
           )}
-          {reminders.length===0&&<p style={{color:"#aaa",fontSize:13}}>No reminders yet.</p>}
-          {reminders.map(r=>(
+          {eqReminders.length===0&&<p style={{color:"#aaa",fontSize:13}}>No reminders yet.</p>}
+          {eqReminders.map(r=>(
             <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":r.reminder_date&&r.reminder_date<todayLocal()?"#f5c6cb":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":"#fff"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                 <div>
@@ -719,6 +732,33 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
                     {r.auto_days&&<span>🔄 Every {r.auto_days} days &nbsp;</span>}
                     <span>👤 {r.created_by} · {fmtDate(r.created_at)}</span>
                   </div>
+                </div>
+                {!r.completed&&<button onClick={()=>completeRem(r.id)} style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>✓ Done</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {activeTab==="tasks"&&(
+        <div>
+          <p style={{color:"#888",fontSize:13,marginTop:0}}>Deferred work to do next time this unit is in the shop. Shows on any work order for this equipment.</p>
+          {!addingTask&&<button onClick={()=>setAddingTask(true)} style={{marginBottom:16,padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>+ Add Task</button>}
+          {addingTask&&(
+            <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:16}}>
+              <Field label="Task" value={taskNote} onChange={setTaskNote} placeholder="e.g. Replace air dryer next visit" required type="textarea"/>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>guard(addTask)} style={{padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Save Task</button>
+                <button onClick={()=>setAddingTask(false)} style={{padding:"9px 16px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>Cancel</button>
+              </div>
+            </div>
+          )}
+          {eqTasks.length===0&&<p style={{color:"#aaa",fontSize:13}}>No future tasks yet.</p>}
+          {eqTasks.map(r=>(
+            <div key={r.id} style={{border:`1px solid ${r.completed?"#a9dfbf":"#eee"}`,borderRadius:10,padding:14,marginBottom:10,background:r.completed?"#f9fff9":"#fff"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div>
+                  <div style={{fontWeight:600,fontSize:14,color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":""}}>📋 {r.note}</div>
+                  <div style={{fontSize:12,color:"#888",marginTop:4}}><span>👤 {r.created_by} · {fmtDate(r.created_at)}</span></div>
                 </div>
                 {!r.completed&&<button onClick={()=>completeRem(r.id)} style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>✓ Done</button>}
               </div>
