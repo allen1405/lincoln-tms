@@ -2329,6 +2329,7 @@ const RemindersPage = () => {
                 </div>
                 <div style={{fontSize:14,color:r.completed?"#888":"#1a1a2e",textDecoration:r.completed?"line-through":"",marginBottom:6}}>{r.note}</div>
                 <div style={{fontSize:12,color:"#888",marginBottom:10,display:"flex",flexWrap:"wrap",gap:8}}>
+                  {r.kind==='task'&&<span style={{padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:700,background:"#fef9e7",color:"#9a7d0a"}}>📋 TASK</span>}
                   {source&&<span>📋 {source}</span>}
                   {r.reminder_date&&<span>📅 Due {fmtDay(r.reminder_date)}</span>}
                   <span>👤 {r.created_by||"—"}</span>
@@ -2360,7 +2361,7 @@ const RemindersPage = () => {
               const st=statusOf(r);
               const stColor=st==="completed"?"#27ae60":st==="overdue"?"#c0392b":"#d4ac0d";
               const stLabel=st==="completed"?"Completed":st==="overdue"?"Overdue":"Pending";
-              const source=r.work_order_id?`WO ${r.work_order_id}`:(r.equipment_label||"—");
+              const source=(r.kind==='task'?'📋 TASK · ':'')+(r.work_order_id?`WO ${r.work_order_id}`:(r.equipment_label||"—"));
               return (
                 <tr key={r.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
                   <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:600}}>{r.customer_name}</td>
