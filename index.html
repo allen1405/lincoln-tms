@@ -852,8 +852,29 @@ const WorkOrders = () => {
   const [dotPhotos,setDotPhotos]=useState({}); // entity_id ("WOID__componentkey") → photos[]
   const [woReminders,setWoReminders]=useState([]);
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
-  const empty={customer:"",unit_number:"",vin:"",mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
+  const empty={customer:"",unit_number:"",vin:"",equipment_id:null,mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
+  const [formEquipItems,setFormEquipItems]=useState(null); // {equipment, items} → amber "open work" panel in the WO form
+  // Resolve typed equipment so deferred work surfaces even without the picker:
+  // exact VIN, else customer+unit number, else whatever the picker set.
+  useEffect(()=>{
+    if(!modal){setFormEquipItems(null);return;}
+    const t=setTimeout(async()=>{
+      let eq=null;
+      const vin=(form.vin||"").trim(), unit=(form.unit_number||"").trim();
+      if(vin){const{data}=await sb.from('equipment').select('*').eq('vin',vin).limit(1);eq=(data&&data[0])||null;}
+      if(!eq&&unit&&form.customer){
+        const c=customers.find(x=>x.name===form.customer);
+        if(c){const{data}=await sb.from('equipment').select('*').eq('customer_id',c.id).eq('unit_number',unit).limit(1);eq=(data&&data[0])||null;}
+      }
+      if(!eq&&form.equipment_id){const{data}=await sb.from('equipment').select('*').eq('id',form.equipment_id).maybeSingle();eq=data||null;}
+      if((eq?eq.id:null)!==form.equipment_id) setForm(p=>({...p,equipment_id:eq?eq.id:null}));
+      if(!eq){setFormEquipItems(null);return;}
+      const{data:items}=await sb.from('reminders').select('*').eq('equipment_id',eq.id).eq('completed',false).order('created_at',{ascending:false});
+      setFormEquipItems(items&&items.length?{equipment:eq,items}:null);
+    },500);
+    return()=>clearTimeout(t);
+  },[modal,form.vin,form.unit_number,form.customer,form.equipment_id]);
   const [editId,setEditId]=useState(null);
   const [woErr,setWoErr]=useState("");
   const [mechanics,setMechanics]=useState([]);
@@ -913,13 +934,13 @@ const WorkOrders = () => {
     closeWoModal();loadWos();
   };
   const openAdd=()=>{setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
-  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
+  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
   const saveEdit=async()=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
     // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
-    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
+    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,equipment_id:form.equipment_id||null,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
     if(id!==editId){
       // The FK cascade covers jobs/parts/notes, but photos are keyed by entity_id
@@ -1216,7 +1237,7 @@ const WorkOrders = () => {
     audit(user,"update","shop_supply",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`length: ${shopSupply.length} chars`);
   };
   const selEquip=(e)=>{
-    setForm(p=>({...p,unit_number:e.unit_number||e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
+    setForm(p=>({...p,equipment_id:e.id,unit_number:e.unit_number||e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
     setEquipModal(null);
   };
 
@@ -1389,6 +1410,14 @@ const WorkOrders = () => {
               {form.customer&&<button onClick={()=>{const c=customers.find(x=>x.name===form.customer);if(c)setEquipModal(c);}} style={{padding:"9px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,whiteSpace:"nowrap"}}>📋 Pick</button>}
             </div>
           </div>
+          {formEquipItems&&(
+            <div style={{background:"#fef9e7",border:"1px solid #f7dc6f",borderRadius:10,padding:"10px 14px",marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#9a7d0a",marginBottom:6}}>⚠ This unit has {formEquipItems.items.filter(i=>i.kind==='task').length} open task(s) · {formEquipItems.items.filter(i=>i.kind!=='task').length} reminder(s)</div>
+              {formEquipItems.items.map(i=>(
+                <div key={i.id} style={{fontSize:13,color:"#7d6608",marginBottom:3}}>{i.kind==='task'?'📋':'🔔'} {i.note}{i.reminder_date?` (due ${fmtDay(i.reminder_date)})`:''}</div>
+              ))}
+            </div>
+          )}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <Field label="VIN" value={form.vin} onChange={v=>setForm(p=>({...p,vin:v}))} required/>
             <Field label="Created by" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...mechanics]} required/>
