@@ -851,6 +851,7 @@ const WorkOrders = () => {
   const [dot,setDot]=useState(null);
   const [dotPhotos,setDotPhotos]=useState({}); // entity_id ("WOID__componentkey") → photos[]
   const [woReminders,setWoReminders]=useState([]);
+  const [eqItems,setEqItems]=useState(null); // {equipment, items} for the open WO's linked equipment
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
   const empty={customer:"",unit_number:"",vin:"",equipment_id:null,mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
@@ -1008,7 +1009,38 @@ const WorkOrders = () => {
   const loadJobs=async(woId)=>{const{data}=await sb.from('jobs').select('*').eq('work_order_id',woId).order('created_at');setJobsList(data||[]);};
   const loadParts=async(woId)=>{const{data}=await sb.from('parts').select('*').eq('work_order_id',woId).order('created_at');setPartsList(data||[]);};
   const loadWoReminders=async(woId)=>{const{data}=await sb.from('reminders').select('*').eq('work_order_id',woId).order('created_at',{ascending:false});setWoReminders(data||[]);};
-  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id)]);};
+  const loadEqItems=async(wo)=>{
+    setEqItems(null);
+    let eq=null;
+    if(wo.equipment_id){const{data}=await sb.from('equipment').select('*').eq('id',wo.equipment_id).maybeSingle();eq=data||null;}
+    if(!eq&&(wo.vin||"").trim()){const{data}=await sb.from('equipment').select('*').eq('vin',wo.vin.trim()).limit(1);eq=(data&&data[0])||null;}
+    if(!eq&&(wo.unit_number||"").trim()&&wo.customer){
+      const c=customers.find(x=>x.name===wo.customer);
+      if(c){const{data}=await sb.from('equipment').select('*').eq('customer_id',c.id).eq('unit_number',wo.unit_number.trim()).limit(1);eq=(data&&data[0])||null;}
+    }
+    if(!eq)return;
+    const{data:items}=await sb.from('reminders').select('*').eq('equipment_id',eq.id).eq('completed',false).order('created_at',{ascending:false});
+    // Rows already attached to THIS WO render in the list below — don't show them twice.
+    setEqItems({equipment:eq,items:(items||[]).filter(r=>r.work_order_id!==wo.id)});
+  };
+  const addTaskAsJob=async(t)=>{
+    const {data:inserted,error}=await sb.from('jobs').insert([{work_order_id:jobsModal.id,name:t.note,status:"Pending",created_by:user.name}]).select().single();
+    if(error){alert("Could not add job: "+error.message);return;}
+    audit(user,"create","job",inserted?.id,`${jobsModal.id} — ${t.note}`);
+    const r=await must(sb.from('reminders').update({completed:true}).eq('id',t.id).eq('completed',false).select(),"Job added, but could not mark the task done");
+    if(r&&r.data&&r.data.length) audit(user,"status_change","reminder",t.id,`${t.customer_name||""} — ${t.equipment_label||""}`,`task completed — added as job on WO ${jobsModal.id}`);
+    loadJobs(jobsModal.id); loadEqItems(jobsModal);
+  };
+  const completeEqItem=async(r0)=>{
+    const r=await must(sb.from('reminders').update({completed:true}).eq('id',r0.id).eq('completed',false).select(),"Could not complete");
+    if(!r)return;
+    if(r.data&&r.data.length){
+      audit(user,"status_change","reminder",r0.id,`${r0.customer_name||""} — ${r0.equipment_label||""}`,`completed: false → true`);
+      await rescheduleAutoReminder(user,r0);
+    }
+    loadEqItems(jobsModal);
+  };
+  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id),loadEqItems(wo)]);};
   const saveWoReminder=async()=>{
     const t=(remForm.note||"").trim(); if(!t)return;
     const payload={customer_name:jobsModal.customer,equipment_label:jobsModal.unit_number||"",work_order_id:jobsModal.id,reminder_date:remForm.reminder_date||null,note:t,created_by:user.name};
@@ -1808,6 +1840,27 @@ const WorkOrders = () => {
           )}
           {jobTab==="reminders"&&(
             <div>
+              {eqItems&&eqItems.items.length>0&&(
+                <div style={{background:"#fef9e7",border:"1px solid #f7dc6f",borderRadius:10,padding:14,marginBottom:14}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#9a7d0a",textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>From this equipment — open items</div>
+                  {eqItems.items.map(r=>(
+                    <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,padding:"8px 0",borderBottom:"1px solid rgba(247,220,111,0.35)"}}>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:14,fontWeight:600,color:"#1a1a2e"}}>{r.kind==='task'?'📋':'🔔'} {r.note}</div>
+                        <div style={{fontSize:12,color:"#888",marginTop:2}}>
+                          {r.reminder_date&&<span>📅 {fmtDay(r.reminder_date)} &nbsp;</span>}
+                          {r.auto_days&&<span>🔄 Every {r.auto_days} days &nbsp;</span>}
+                          <span>👤 {r.created_by||"—"}</span>
+                        </div>
+                      </div>
+                      <div style={{display:"flex",gap:6}}>
+                        {r.kind==='task'&&<button onClick={()=>guard(()=>addTaskAsJob(r))} style={{padding:"6px 12px",background:"#c0392b",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>➕ Add as job</button>}
+                        <button onClick={()=>completeEqItem(r)} title="Mark done" style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>✓</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={{background:"#f8f9fa",borderRadius:10,padding:14,marginBottom:14}}>
                 <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:8}}>{remForm.id?"Edit reminder":`Add reminder for ${jobsModal.id}`}</div>
                 <Field label="Due date" value={remForm.reminder_date} onChange={v=>setRemForm(p=>({...p,reminder_date:v}))} type="date"/>
