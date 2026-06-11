@@ -1346,12 +1346,15 @@ const WorkOrders = () => {
           </table>
         </div>
       )}
-      {view==="active"&&statusFilter===null&&<div style={{display:"flex",gap:12,overflowX:"auto",paddingBottom:12}}>
+      {/* Desktop: cap the board to the viewport so columns scroll internally and the
+          horizontal scrollbar stays on screen instead of below a page-tall board. */}
+      {view==="active"&&statusFilter===null&&<div style={{display:"flex",gap:12,overflowX:"auto",paddingBottom:12,...(vp.isDesktop?{maxHeight:"calc(100vh - 215px)"}:{})}}>
         {WO_STATUSES.map(col=>{
           const cards=filtered.filter(w=>w.status===col&&!w.is_voided);
           return (
-            <div key={col} style={{minWidth:260,flex:1,background:col==="Done"||col==="Paid"?"#f0faf4":"#f8f9fa",borderRadius:12,padding:12}}>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}><Badge s={col}/><span style={{fontSize:12,color:"#888"}}>{cards.length}</span></div>
+            <div key={col} style={{minWidth:260,flex:1,background:col==="Done"||col==="Paid"?"#f0faf4":"#f8f9fa",borderRadius:12,padding:12,display:"flex",flexDirection:"column",minHeight:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12,flexShrink:0}}><Badge s={col}/><span style={{fontSize:12,color:"#888"}}>{cards.length}</span></div>
+              <div style={{overflowY:"auto",minHeight:0,flex:1}}>
               {cards.length===0?<div style={{textAlign:"center",color:"#ccc",fontSize:13,padding:"20px 0"}}>Empty</div>
               :cards.map(w=>(
                 <div key={w.id} style={{background:"#fff",borderRadius:10,padding:12,marginBottom:8,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}}>
@@ -1373,6 +1376,7 @@ const WorkOrders = () => {
                   </select>
                 </div>
               ))}
+              </div>
             </div>
           );
         })}
