@@ -856,27 +856,35 @@ const WorkOrders = () => {
   const empty={customer:"",unit_number:"",vin:"",equipment_id:null,mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [formEquipItems,setFormEquipItems]=useState(null); // {equipment, items} → amber "open work" panel in the WO form
+  const pickedEquip=React.useRef(false); // true when equipment_id came from the picker (or an existing WO) — those links are durable; auto-resolved ones are not
+  const [editId,setEditId]=useState(null);
   // Resolve typed equipment so deferred work surfaces even without the picker:
-  // exact VIN, else customer+unit number, else whatever the picker set.
+  // exact VIN, else customer+unit number, else a durable picker-set link.
   useEffect(()=>{
     if(!modal){setFormEquipItems(null);return;}
+    let cancelled=false;
     const t=setTimeout(async()=>{
-      let eq=null;
+      let eq=null, lookupFailed=false;
       const vin=(form.vin||"").trim(), unit=(form.unit_number||"").trim();
-      if(vin){const{data}=await sb.from('equipment').select('*').eq('vin',vin).limit(1);eq=(data&&data[0])||null;}
+      if(vin){const{data,error}=await sb.from('equipment').select('*').ilike('vin',vin).limit(1);if(error)lookupFailed=true;else eq=(data&&data[0])||null;}
+      if(cancelled)return;
       if(!eq&&unit&&form.customer){
         const c=customers.find(x=>x.name===form.customer);
-        if(c){const{data}=await sb.from('equipment').select('*').eq('customer_id',c.id).eq('unit_number',unit).limit(1);eq=(data&&data[0])||null;}
+        if(c){const{data,error}=await sb.from('equipment').select('*').eq('customer_id',c.id).eq('unit_number',unit).limit(1);if(error)lookupFailed=true;else eq=(data&&data[0])||null;}
       }
-      if(!eq&&form.equipment_id){const{data}=await sb.from('equipment').select('*').eq('id',form.equipment_id).maybeSingle();eq=data||null;}
+      if(cancelled)return;
+      if(!eq&&form.equipment_id&&(pickedEquip.current||lookupFailed)){const{data,error}=await sb.from('equipment').select('*').eq('id',form.equipment_id).maybeSingle();if(error)lookupFailed=true;else eq=data||null;}
+      if(cancelled)return;
+      if(lookupFailed&&!eq){setFormEquipItems(null);return;} // network blip: keep the form untouched, just hide the panel
       if((eq?eq.id:null)!==form.equipment_id) setForm(p=>({...p,equipment_id:eq?eq.id:null}));
       if(!eq){setFormEquipItems(null);return;}
       const{data:items}=await sb.from('reminders').select('*').eq('equipment_id',eq.id).eq('completed',false).order('created_at',{ascending:false});
-      setFormEquipItems(items&&items.length?{equipment:eq,items}:null);
+      if(cancelled)return;
+      const open=(items||[]).filter(i=>!editId||i.work_order_id!==editId); // editing: rows on this WO already show in its Reminders tab
+      setFormEquipItems(open.length?{equipment:eq,items:open}:null);
     },500);
-    return()=>clearTimeout(t);
-  },[modal,form.vin,form.unit_number,form.customer,form.equipment_id]);
-  const [editId,setEditId]=useState(null);
+    return()=>{cancelled=true;clearTimeout(t);};
+  },[modal,form.vin,form.unit_number,form.customer,form.equipment_id,customers,editId]);
   const [woErr,setWoErr]=useState("");
   const [mechanics,setMechanics]=useState([]);
 
@@ -934,8 +942,8 @@ const WorkOrders = () => {
     audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
   };
-  const openAdd=()=>{setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
-  const openEdit=(w)=>{setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
+  const openAdd=()=>{pickedEquip.current=false;setFormEquipItems(null);setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
+  const openEdit=(w)=>{pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
   const saveEdit=async()=>{
     const id=(form.id||"").trim();
@@ -1013,7 +1021,7 @@ const WorkOrders = () => {
     setEqItems(null);
     let eq=null;
     if(wo.equipment_id){const{data}=await sb.from('equipment').select('*').eq('id',wo.equipment_id).maybeSingle();eq=data||null;}
-    if(!eq&&(wo.vin||"").trim()){const{data}=await sb.from('equipment').select('*').eq('vin',wo.vin.trim()).limit(1);eq=(data&&data[0])||null;}
+    if(!eq&&(wo.vin||"").trim()){const{data}=await sb.from('equipment').select('*').ilike('vin',wo.vin.trim()).limit(1);eq=(data&&data[0])||null;}
     if(!eq&&(wo.unit_number||"").trim()&&wo.customer){
       const c=customers.find(x=>x.name===wo.customer);
       if(c){const{data}=await sb.from('equipment').select('*').eq('customer_id',c.id).eq('unit_number',wo.unit_number.trim()).limit(1);eq=(data&&data[0])||null;}
@@ -1024,11 +1032,19 @@ const WorkOrders = () => {
     setEqItems({equipment:eq,items:(items||[]).filter(r=>r.work_order_id!==wo.id)});
   };
   const addTaskAsJob=async(t)=>{
+    // Claim the task first — two devices converting the same task would otherwise both insert a job.
+    const claim=await must(sb.from('reminders').update({completed:true}).eq('id',t.id).eq('completed',false).select(),"Could not claim the task");
+    if(!claim)return;
+    if(!claim.data||!claim.data.length){alert("This task was already completed elsewhere.");loadEqItems(jobsModal);return;}
     const {data:inserted,error}=await sb.from('jobs').insert([{work_order_id:jobsModal.id,name:t.note,status:"Pending",created_by:user.name}]).select().single();
-    if(error){alert("Could not add job: "+error.message);return;}
+    if(error){
+      await sb.from('reminders').update({completed:false}).eq('id',t.id); // reopen — the job never landed
+      alert("Could not add job: "+error.message);
+      loadEqItems(jobsModal);
+      return;
+    }
     audit(user,"create","job",inserted?.id,`${jobsModal.id} — ${t.note}`);
-    const r=await must(sb.from('reminders').update({completed:true}).eq('id',t.id).eq('completed',false).select(),"Job added, but could not mark the task done");
-    if(r&&r.data&&r.data.length) audit(user,"status_change","reminder",t.id,`${t.customer_name||""} — ${t.equipment_label||""}`,`task completed — added as job on WO ${jobsModal.id}`);
+    audit(user,"status_change","reminder",t.id,`${t.customer_name||""} — ${t.equipment_label||""}`,`task completed — added as job on WO ${jobsModal.id}`);
     loadJobs(jobsModal.id); loadEqItems(jobsModal);
   };
   const completeEqItem=async(r0)=>{
@@ -1269,6 +1285,7 @@ const WorkOrders = () => {
     audit(user,"update","shop_supply",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`length: ${shopSupply.length} chars`);
   };
   const selEquip=(e)=>{
+    pickedEquip.current=true;
     setForm(p=>({...p,equipment_id:e.id,unit_number:e.unit_number||e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
     setEquipModal(null);
   };
@@ -1854,8 +1871,8 @@ const WorkOrders = () => {
                         </div>
                       </div>
                       <div style={{display:"flex",gap:6}}>
-                        {r.kind==='task'&&<button onClick={()=>guard(()=>addTaskAsJob(r))} style={{padding:"6px 12px",background:"#c0392b",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>➕ Add as job</button>}
-                        <button onClick={()=>completeEqItem(r)} title="Mark done" style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>✓</button>
+                        {r.kind==='task'&&<button onClick={()=>guard(()=>addTaskAsJob(r))} style={{padding:"6px 14px",minHeight:44,background:"#c0392b",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>➕ Add as job</button>}
+                        <button onClick={()=>completeEqItem(r)} title="Mark done" style={{padding:"6px 14px",minHeight:44,background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>✓</button>
                       </div>
                     </div>
                   ))}
@@ -2217,7 +2234,7 @@ const RemindersPage = () => {
   const [sortDir,setSortDir]=useState("asc");
   const [modal,setModal]=useState(false);
   const [editId,setEditId]=useState(null);
-  const EMPTY={customer_name:"",equipment_id:"",work_order_id:"",reminder_date:"",note:""};
+  const EMPTY={customer_name:"",equipment_id:"",work_order_id:"",reminder_date:"",note:"",kind:"reminder"};
   const [form,setForm]=useState(EMPTY);
 
   const load=async()=>{
@@ -2257,14 +2274,15 @@ const RemindersPage = () => {
   const sortArrow=k=>sortBy===k?(sortDir==="asc"?" ↑":" ↓"):"";
 
   const openAdd=()=>{setForm(EMPTY);setEditId(null);setModal(true);};
-  const openEdit=r=>{setForm({customer_name:r.customer_name||"",equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||""});setEditId(r.id);setModal(true);};
+  const openEdit=r=>{setForm({customer_name:r.customer_name||"",equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||"",kind:r.kind||"reminder"});setEditId(r.id);setModal(true);};
   const closeModal=()=>{setModal(false);setEditId(null);setForm(EMPTY);};
   const save=async()=>{
     if(!form.customer_name||!form.note.trim()){alert("Customer and note are required.");return;}
     const eqId=form.equipment_id?Number(form.equipment_id):null;
     const eqRow=eqId?equipment.find(e=>e.id===eqId):null;
     const label=eqRow?`${eqRow.year||""} ${eqRow.make||""} ${eqRow.model||eqRow.type||""}`.trim()+(eqRow.unit_number?` · #${eqRow.unit_number}`:"")+(eqRow.vin?` · ${eqRow.vin}`:""):(form.work_order_id?`WO ${form.work_order_id}`:form.customer_name);
-    const payload={customer_name:form.customer_name,equipment_id:eqId,equipment_label:label.trim(),work_order_id:form.work_order_id||null,reminder_date:form.reminder_date||null,note:form.note.trim(),created_by:user.name};
+    // Tasks are undated by design — editing one here must not give it a due date.
+    const payload={customer_name:form.customer_name,equipment_id:eqId,equipment_label:label.trim(),work_order_id:form.work_order_id||null,reminder_date:form.kind==='task'?null:(form.reminder_date||null),note:form.note.trim(),created_by:user.name};
     if(editId){
       const res=await sb.from('reminders').update(payload).eq('id',editId);
       if(res.error){alert("Could not save: "+res.error.message);return;}
@@ -2404,7 +2422,7 @@ const RemindersPage = () => {
               </select>
             </div>
           </div>
-          <Field label="Due date" value={form.reminder_date} onChange={v=>setForm(p=>({...p,reminder_date:v}))} type="date"/>
+          {form.kind!=='task'&&<Field label="Due date" value={form.reminder_date} onChange={v=>setForm(p=>({...p,reminder_date:v}))} type="date"/>}
           <Field label="Note" value={form.note} onChange={v=>setForm(p=>({...p,note:v}))} type="textarea" required placeholder="e.g. DOT inspection due, call for oil change..."/>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
             <button onClick={closeModal} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer"}}>Cancel</button>
