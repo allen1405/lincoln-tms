@@ -273,6 +273,9 @@ const addDaysLocal = n => { const d=new Date(); d.setDate(d.getDate()+Number(n))
 // job hours) + parts. woHoursMap turns a flat jobs list into work_order_id → total hours.
 const woHoursMap = jobs => { const m={}; (jobs||[]).forEach(j=>{ if(j.work_order_id!=null) m[j.work_order_id]=(m[j.work_order_id]||0)+Number(j.labor||0); }); return m; };
 const woRevenue = (w,hours) => (Number(w.labor)||0)*(hours||0) + (Number(w.parts)||0);
+// Fire after any reminder is completed / rescheduled / deleted so the overdue nav badge
+// reconciles immediately, instead of waiting for the next navigation/refresh.
+const bumpReminders = () => { try { window.dispatchEvent(new Event('reminders-changed')); } catch(_) {} };
 // Auto-recurring reminders (auto_days): completing one schedules the next occurrence.
 const rescheduleAutoReminder = async (user, prev) => {
   if (!prev?.auto_days) return;
@@ -484,7 +487,10 @@ const NAV = [
   {id:"auditlog",label:"Audit Log",icon:"🛡️",s:"SUPPORT"},
   {id:"settings",label:"Settings",icon:"⚙️",s:"SUPPORT"},
 ];
-const Sidebar = ({active,onNav,user,onLogout,onRefresh,refreshing,nav = NAV}) => (
+// Red count bubble for nav items (e.g. overdue reminders). `float` positions it absolutely
+// for icon-only rails; otherwise it sits inline.
+const Bubble = ({n,float}) => (n>0 ? <span style={{...(float?{position:"absolute",top:4,right:6}:{marginLeft:"auto"}),minWidth:18,height:18,padding:"0 5px",borderRadius:9,background:"#e74c3c",color:"#fff",fontSize:10,fontWeight:800,display:"inline-flex",alignItems:"center",justifyContent:"center",lineHeight:1,boxShadow:"0 0 0 2px #1a1a2e"}}>{n>99?"99+":n}</span> : null);
+const Sidebar = ({active,onNav,user,onLogout,onRefresh,refreshing,nav = NAV,badges={}}) => (
   <div style={{width:230,background:"#1a1a2e",display:"flex",flexDirection:"column",height:"100vh",position:"fixed",left:0,top:0,zIndex:100}}>
     <div style={{padding:"20px 20px 16px",borderBottom:"1px solid rgba(255,255,255,0.08)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -501,7 +507,7 @@ const Sidebar = ({active,onNav,user,onLogout,onRefresh,refreshing,nav = NAV}) =>
           <div style={{padding:"8px 20px 4px",fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.3)",letterSpacing:1.5}}>{sec}</div>
           {items.map(item=>(
             <button key={item.id} onClick={()=>onNav(item.id)} style={{display:"flex",alignItems:"center",gap:10,width:"100%",padding:"10px 20px",background:active===item.id?"rgba(192,57,43,0.2)":"none",border:"none",color:active===item.id?"#e74c3c":"rgba(255,255,255,0.6)",cursor:"pointer",textAlign:"left",fontSize:13,fontWeight:active===item.id?600:400,borderLeft:active===item.id?"3px solid #e74c3c":"3px solid transparent"}}>
-              <span>{item.icon}</span>{item.label}
+              <span>{item.icon}</span>{item.label}<Bubble n={badges[item.id]}/>
             </button>
           ))}
         </div>
@@ -695,6 +701,7 @@ const EquipmentModal = ({customerId,customerName,onClose,onSelect}) => {
       audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
       await rescheduleAutoReminder(user,prev);
     }
+    bumpReminders();
     loadReminders(viewEquip.id);
   };
   const label=e=>`${e.year||''} ${e.make||''} ${e.model||e.type}`.trim();
@@ -1068,6 +1075,7 @@ const WorkOrders = () => {
       audit(user,"status_change","reminder",r0.id,`${r0.customer_name||""} — ${r0.equipment_label||""}`,`completed: false → true`);
       await rescheduleAutoReminder(user,r0);
     }
+    bumpReminders();
     loadEqItems(jobsModal);
   };
   const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id),loadEqItems(wo)]);};
@@ -1099,8 +1107,8 @@ const WorkOrders = () => {
     loadWoReminders(jobsModal.id);
   };
   const editWoReminder=r=>setRemForm({id:r.id,reminder_date:r.reminder_date||"",note:r.note||""});
-  const completeWoReminder=async(id)=>{const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");if(!r)return;if(r.data&&r.data.length)audit(user,"status_change","reminder",id,`${jobsModal.id}`,`completed: false → true`);loadWoReminders(jobsModal.id);};
-  const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
+  const completeWoReminder=async(id)=>{const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");if(!r)return;if(r.data&&r.data.length)audit(user,"status_change","reminder",id,`${jobsModal.id}`,`completed: false → true`);loadWoReminders(jobsModal.id);bumpReminders();};
+  const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);bumpReminders();if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
   const blankDot=(wo)=>{
     const cust=customers.find(c=>c.name===wo.customer);
     return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:cust?.address||"",city:"",state:"",zip:"",inspector:user.name||"",inspection_date:todayLocal(),vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
@@ -2035,8 +2043,8 @@ const Customers = () => {
     loadCustReminders(remTarget.name);
   };
   const editCustReminder=r=>setCustRemForm({id:r.id,equipment_id:r.equipment_id?String(r.equipment_id):"",work_order_id:r.work_order_id||"",reminder_date:r.reminder_date||"",note:r.note||""});
-  const completeCustReminder=async(id)=>{const prev=custReminders.find(x=>x.id===id);const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");if(!r)return;if(r.data&&r.data.length){audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);await rescheduleAutoReminder(user,prev);}loadCustReminders(remTarget.name);};
-  const delCustReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${remTarget?.name||""}`);loadCustReminders(remTarget.name);if(custRemForm.id===id)setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});};
+  const completeCustReminder=async(id)=>{const prev=custReminders.find(x=>x.id===id);const r=await must(sb.from('reminders').update({completed:true}).eq('id',id).eq('completed',false).select(),"Could not complete reminder");if(!r)return;if(r.data&&r.data.length){audit(user,"status_change","reminder",id,`${remTarget?.name||""}`,`completed: false → true`);await rescheduleAutoReminder(user,prev);}loadCustReminders(remTarget.name);bumpReminders();};
+  const delCustReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${remTarget?.name||""}`);loadCustReminders(remTarget.name);bumpReminders();if(custRemForm.id===id)setCustRemForm({id:null,equipment_id:"",work_order_id:"",reminder_date:"",note:""});};
   useEffect(()=>{load();loadPaid();loadRemCounts();},[]);
   const q=search.toLowerCase();
   const filtered=list.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.email||"").toLowerCase().includes(q)||(c.mc_number||"").toLowerCase().includes(q)||(c.dot_number||"").toLowerCase().includes(q));
@@ -2339,7 +2347,7 @@ const RemindersPage = () => {
       if(error){alert("Could not create: "+error.message);return;}
       audit(user,"create","reminder",inserted?.id,`${form.customer_name} — ${payload.equipment_label}`,payload.note.slice(0,120));
     }
-    closeModal();load();
+    closeModal();load();bumpReminders(); // a new/edited due date can change the overdue count
   };
   const complete=async(id)=>{
     const prev=list.find(r=>r.id===id);
@@ -2349,7 +2357,7 @@ const RemindersPage = () => {
       audit(user,"status_change","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`,`completed: false → true`);
       await rescheduleAutoReminder(user,prev);
     }
-    load();
+    load();bumpReminders();
   };
   const del=async(id)=>{
     if(!confirm("Delete reminder?"))return;
@@ -2357,7 +2365,7 @@ const RemindersPage = () => {
     const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");
     if(!r)return;
     audit(user,"delete","reminder",id,`${prev?.customer_name||""} — ${prev?.equipment_label||""}`);
-    load();
+    load();bumpReminders();
   };
 
   const selectedCust=customers.find(c=>c.name===form.customer_name);
@@ -2863,15 +2871,15 @@ const AuditLog = () => {
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 // Tablet-landscape rail: 64px wide, icons only.
-const IconRail = ({active,onNav,user,onLogout,onRefresh,refreshing,nav}) => (
+const IconRail = ({active,onNav,user,onLogout,onRefresh,refreshing,nav,badges={}}) => (
   <div style={{width:64,background:"#1a1a2e",display:"flex",flexDirection:"column",height:"100vh",position:"fixed",left:0,top:0,zIndex:100,alignItems:"center",paddingBottom:8}}>
     <div style={{padding:"14px 0 10px",borderBottom:"1px solid rgba(255,255,255,0.08)",width:"100%",display:"flex",justifyContent:"center"}}>
       <div style={{width:38,height:38,background:"linear-gradient(135deg,#c0392b,#e74c3c)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🚛</div>
     </div>
     <div style={{flex:1,overflowY:"auto",width:"100%",padding:"8px 0",display:"flex",flexDirection:"column",gap:2,alignItems:"center"}}>
       {nav.map(item=>(
-        <button key={item.id} onClick={()=>onNav(item.id)} title={item.label} style={{width:48,height:48,border:"none",borderRadius:10,background:active===item.id?"rgba(192,57,43,0.25)":"none",color:active===item.id?"#e74c3c":"rgba(255,255,255,0.7)",cursor:"pointer",fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>
-          {item.icon}
+        <button key={item.id} onClick={()=>onNav(item.id)} title={item.label} style={{position:"relative",width:48,height:48,border:"none",borderRadius:10,background:active===item.id?"rgba(192,57,43,0.25)":"none",color:active===item.id?"#e74c3c":"rgba(255,255,255,0.7)",cursor:"pointer",fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          {item.icon}<Bubble n={badges[item.id]} float/>
         </button>
       ))}
     </div>
@@ -2882,10 +2890,11 @@ const IconRail = ({active,onNav,user,onLogout,onRefresh,refreshing,nav}) => (
 );
 
 // Mobile/portrait bottom nav: 5 items max, +More drawer for the rest.
-const BottomNav = ({active,onNav,nav}) => {
+const BottomNav = ({active,onNav,nav,badges={}}) => {
   const [moreOpen,setMoreOpen]=useState(false);
   const primary = nav.slice(0,4);
   const overflow = nav.slice(4);
+  const overflowBadge = overflow.reduce((s,it)=>s+(badges[it.id]||0),0); // surface a hidden item's count on the More button
   const visible = [...primary];
   if (overflow.length > 0) visible.push({id:"__more",label:"More",icon:"⋯"});
   return (
@@ -2895,15 +2904,16 @@ const BottomNav = ({active,onNav,nav}) => {
         <div style={{width:42,height:4,background:"#e0e0e0",borderRadius:2,margin:"0 auto 12px"}}/>
         {overflow.map(item=>(
           <button key={item.id} onClick={()=>{setMoreOpen(false);onNav(item.id);}} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px 16px",background:active===item.id?"#fef0ee":"#fff",border:"none",color:active===item.id?"#c0392b":"#1a1a2e",cursor:"pointer",fontSize:15,fontWeight:600,borderRadius:8}}>
-            <span style={{fontSize:22}}>{item.icon}</span>{item.label}
+            <span style={{fontSize:22}}>{item.icon}</span>{item.label}<Bubble n={badges[item.id]}/>
           </button>
         ))}
       </div>}
       <div style={{position:"fixed",bottom:0,left:0,right:0,minHeight:64,paddingBottom:"env(safe-area-inset-bottom, 0px)",background:"#fff",borderTop:"1px solid #e5e5e5",display:"flex",zIndex:100,boxShadow:"0 -4px 20px rgba(0,0,0,0.06)"}}>
         {visible.map(item=>(
-          <button key={item.id} onClick={()=>item.id==="__more"?setMoreOpen(o=>!o):onNav(item.id)} style={{flex:1,border:"none",background:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:"6px 4px",color:active===item.id?"#c0392b":"#666"}}>
+          <button key={item.id} onClick={()=>item.id==="__more"?setMoreOpen(o=>!o):onNav(item.id)} style={{position:"relative",flex:1,border:"none",background:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:"6px 4px",color:active===item.id?"#c0392b":"#666"}}>
             <span style={{fontSize:22}}>{item.icon}</span>
             <span style={{fontSize:10,fontWeight:active===item.id?700:500}}>{item.label}</span>
+            <Bubble n={item.id==="__more"?overflowBadge:badges[item.id]} float/>
           </button>
         ))}
       </div>
@@ -2946,6 +2956,7 @@ const App = () => {
   const [mode,setMode]=useState("shop");
   const [refreshKey,setRefreshKey]=useState(0);
   const [refreshing,setRefreshing]=useState(false);
+  const [overdueReminders,setOverdueReminders]=useState(0);
   // Bump the key on the rendered page so its component remounts and useEffects re-fire,
   // pulling fresh data without affecting nav, scroll, or open modals on OTHER pages.
   const onRefresh = () => { setRefreshing(true); setRefreshKey(k => k + 1); setTimeout(() => setRefreshing(false), 450); };
@@ -2959,6 +2970,17 @@ const App = () => {
     if(shopActive && !activeNav.some(n=>n.id===page)) setPage(activeNav[0]?.id || "workorders");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[shopActive]);
+  // Overdue-reminder count for the nav badge. Refetches on navigation/refresh and whenever
+  // a reminder is resolved/edited (the 'reminders-changed' event) — so it only drops when the
+  // underlying overdue set actually shrinks, not just from viewing.
+  useEffect(()=>{
+    if(!user) return;
+    let alive=true;
+    const fetchOverdue=()=>sb.from('reminders').select('id',{count:'exact',head:true}).eq('completed',false).lt('reminder_date',todayLocal()).then(({count})=>{ if(alive) setOverdueReminders(count||0); });
+    fetchOverdue();
+    window.addEventListener('reminders-changed',fetchOverdue);
+    return ()=>{ alive=false; window.removeEventListener('reminders-changed',fetchOverdue); };
+  },[user,page,refreshKey]);
   // Re-validate the restored session on load — without this a deactivated employee's
   // tablet stays logged in (with their old role) until they voluntarily log out.
   useEffect(()=>{
@@ -2979,19 +3001,20 @@ const App = () => {
     invoices:<Invoices/>,estimates:<Estimates/>,auditlog:<AuditLog/>,settings:<Settings/>,
   };
   const canToggleMode = isMech && !vp.isDesktop;
+  const badges = {reminders: overdueReminders};
   const currentNav = activeNav.find(n=>n.id===page);
   const sidebarWidth = vp.isDesktop ? 230 : vp.isTabletLandscape ? 64 : 0;
   const mainPadding = vp.isMobile ? 12 : vp.isTabletLandscape ? 16 : 28;
   return (
     <UserCtx.Provider value={user}><ModeCtx.Provider value={{mode,shopActive}}>
       <div style={{display:"flex",minHeight:"100vh",background:"#f4f6f9"}}>
-        {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav}/>}
-        {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav}/>}
+        {vp.isDesktop && <Sidebar active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav} badges={badges}/>}
+        {vp.isTabletLandscape && <IconRail active={page} onNav={setPage} user={user} onLogout={()=>setUser(null)} onRefresh={onRefresh} refreshing={refreshing} nav={activeNav} badges={badges}/>}
         <main style={{marginLeft:sidebarWidth,flex:1,minWidth:0,padding:mainPadding,minHeight:"100vh",paddingBottom:vp.isMobile?"calc(80px + env(safe-area-inset-bottom, 0px))":mainPadding}}>
           {!vp.isDesktop && <TopBar pageLabel={currentNav?.label||"TMS"} mode={mode} onToggleMode={()=>setMode(m=>m==="shop"?"full":"shop")} canToggle={canToggleMode} onRefresh={onRefresh} refreshing={refreshing}/>}
           <div key={`${page}-${refreshKey}`} style={{padding:vp.isMobile?12:0}}>{pages[page]||pages.dashboard}</div>
         </main>
-        {vp.isMobile && <BottomNav active={page} onNav={setPage} nav={activeNav}/>}
+        {vp.isMobile && <BottomNav active={page} onNav={setPage} nav={activeNav} badges={badges}/>}
         {/* Temporary debug indicator: shows the current viewport tier so we can diagnose
             the Samsung tab flicker remotely. Remove once stable. Activate by adding
             ?debug=1 to the URL. */}
