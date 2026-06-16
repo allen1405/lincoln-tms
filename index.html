@@ -871,6 +871,7 @@ const WorkOrders = () => {
   const empty={customer:"",unit_number:"",vin:"",equipment_id:null,vehicle_type:"",mechanic:"",description:"",labor:"",parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [formEquipItems,setFormEquipItems]=useState(null); // {equipment, items} → amber "open work" panel in the WO form
+  const [ackEquip,setAckEquip]=useState(null); // {equipment, items} → acknowledge popup shown right after picking equipment with open reminders
   const pickedEquip=React.useRef(false); // true when equipment_id came from the picker (or an existing WO) — those links are durable; auto-resolved ones are not
   const [editId,setEditId]=useState(null);
   const [combinedOpen,setCombinedOpen]=useState(false); // desktop combined view active — the form is live but `modal` stays false
@@ -1318,10 +1319,13 @@ const WorkOrders = () => {
     shopSupplySaved.current=shopSupply;
     audit(user,"update","shop_supply",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`length: ${shopSupply.length} chars`);
   };
-  const selEquip=(e)=>{
+  const selEquip=async(e)=>{
     pickedEquip.current=true;
     setForm(p=>({...p,equipment_id:e.id,vehicle_type:e.type||p.vehicle_type,unit_number:e.unit_number||e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
     setEquipModal(null);
+    // Surface any open reminders left on this unit from past jobs as an acknowledge popup.
+    const {data}=await sb.from('reminders').select('*').eq('equipment_id',e.id).eq('completed',false).neq('kind','task').order('created_at',{ascending:false});
+    if(data&&data.length) setAckEquip({equipment:e,items:data});
   };
 
   if(loading) return <Loading/>;
@@ -1575,6 +1579,21 @@ const WorkOrders = () => {
       )}
 
       {equipModal&&<EquipmentModal customerId={equipModal.id} customerName={equipModal.name} onClose={()=>setEquipModal(null)} onSelect={selEquip}/>}
+      {ackEquip&&(
+        <Modal title="⚠️ Open reminders on this unit" onClose={()=>setAckEquip(null)}>
+          <p style={{margin:"0 0 14px",fontSize:14,color:"#555"}}><strong>{`${ackEquip.equipment.year||""} ${ackEquip.equipment.make||""} ${ackEquip.equipment.model||ackEquip.equipment.type||""}`.trim()}{ackEquip.equipment.unit_number?` · #${ackEquip.equipment.unit_number}`:""}</strong> has {ackEquip.items.length} open reminder{ackEquip.items.length>1?"s":""} from past work:</p>
+          {ackEquip.items.map(r=>(
+            <div key={r.id} style={{border:`1px solid ${r.reminder_date&&r.reminder_date<todayLocal()?"#f5c6cb":"#f7dc6f"}`,background:"#fef9e7",borderRadius:10,padding:14,marginBottom:10}}>
+              <div style={{fontWeight:600,fontSize:14,color:"#1a1a2e"}}>🔔 {r.note}</div>
+              <div style={{fontSize:12,color:"#7d6608",marginTop:4}}>
+                {r.reminder_date&&<span>📅 {r.reminder_date<todayLocal()?"Overdue — due":"Due"} {fmtDay(r.reminder_date)} &nbsp;</span>}
+                {r.created_by&&<span>👤 {r.created_by}</span>}
+              </div>
+            </div>
+          ))}
+          <button onClick={()=>setAckEquip(null)} style={{marginTop:6,width:"100%",padding:"12px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:14,minHeight:44}}>OK, got it</button>
+        </Modal>
+      )}
 
       {jobsModal&&(
         <Modal title={<span>{jobsModal.id} — {jobsModal.customer} ({jobsModal.unit_number}){jobsModal.vehicle_type&&<span style={{marginLeft:8,padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:700,verticalAlign:"middle",background:(VTYPE_COLOR[jobsModal.vehicle_type]||"#7f8c8d")+"22",color:VTYPE_COLOR[jobsModal.vehicle_type]||"#7f8c8d"}}>{jobsModal.vehicle_type}</span>}</span>} onClose={vp.isDesktop?closeCombined:closeWoDetails} wide={!vp.isDesktop} xwide={vp.isDesktop}>
