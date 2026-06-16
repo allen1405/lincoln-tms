@@ -948,7 +948,7 @@ const WorkOrders = () => {
   const add=async()=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
-    const res=await sb.from('work_orders').insert([{...form,id,labor:Number(form.labor),parts:Number(form.parts),truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}]).select().single();
+    const res=await sb.from('work_orders').insert([{...form,id,vehicle_type:form.vehicle_type||null,labor:Number(form.labor),parts:Number(form.parts),truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}]).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not create work order: "+res.error.message);return;}
     audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
