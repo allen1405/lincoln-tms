@@ -474,7 +474,7 @@ const NAV = [
   {id:"appointments",label:"Appointments",icon:"📅",s:"MENU"},
   {id:"reminders",label:"Reminders",icon:"🔔",s:"MENU",shop:true},
   {id:"employees",label:"Employees",icon:"👤",s:"MENU"},
-  {id:"salaries",label:"Salaries",icon:"💰",s:"MENU"},
+  {id:"salaries",label:"Salaries",icon:"💰",s:"MENU",admin:true},
   {id:"inventory",label:"Inventory",icon:"📦",s:"SUPPORT",shop:true},
   {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT",admin:true},
   {id:"invoices",label:"Invoices",icon:"🧾",s:"SUPPORT"},
@@ -2584,8 +2584,10 @@ const Settings = () => {
 
 // ─── SALARIES ────────────────────────────────────────────────────────────────
 const Salaries = () => {
+  const user = useContext(UserCtx);
   const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [users,setUsers]=useState([]); const [loading,setLoading]=useState(true);
   useEffect(()=>{Promise.all([sb.from('work_orders').select('*').neq('is_voided',true),sb.from('jobs').select('work_order_id,mechanic,labor'),sb.from('users').select('*').eq('active',true)]).then(([w,j,u])=>{setWos(w.data||[]);setJobs(j.data||[]);setUsers(u.data||[]);setLoading(false);});},[]);
+  if(user.role!=="admin") return <div style={{padding:40,textAlign:"center",color:"#888"}}>⛔ Admin access only.</div>;
   if(loading) return <Loading/>;
   // Labor revenue is earned per job: the WO's hourly rate × the hours that mechanic logged on it.
   const woById=Object.fromEntries(wos.map(w=>[w.id,w]));
@@ -2639,6 +2641,7 @@ const Reports = () => {
   jobs.forEach(j=>{ const w=woById[j.work_order_id]; if(!w||!j.mechanic) return; if(!inPeriod(w.date)) return; mechHours[j.mechanic]=(mechHours[j.mechanic]||0)+Number(j.labor||0); });
   const mechRows=Object.entries(mechHours).filter(([,h])=>h>0).sort((a,b)=>b[1]-a[1]);
   const totalHours=mechRows.reduce((s,[,h])=>s+h,0);
+  const maxHours=mechRows[0]?.[1]||0; // rows are sorted desc, so the first is the largest — drives bar widths
   const periods=[["today","Today"],["week","This week"],["month","This month"],["all","All time"]];
 
   return (
@@ -2676,7 +2679,7 @@ const Reports = () => {
               <div key={m} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #f5f5f5"}}>
                 <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0}}>
                   <span style={{fontSize:14,fontWeight:600,whiteSpace:"nowrap"}}>👨‍🔧 {m}</span>
-                  <div style={{flex:1,height:8,background:"#f0f0f0",borderRadius:4,overflow:"hidden",minWidth:40}}><div style={{width:`${totalHours?Math.round(h/Math.max(...mechRows.map(r=>r[1]))*100):0}%`,height:"100%",background:"#3498db"}}/></div>
+                  <div style={{flex:1,height:8,background:"#f0f0f0",borderRadius:4,overflow:"hidden",minWidth:40}}><div style={{width:`${maxHours?Math.round(h/maxHours*100):0}%`,height:"100%",background:"#3498db"}}/></div>
                 </div>
                 <span style={{fontSize:14,fontWeight:700,marginLeft:12,whiteSpace:"nowrap"}}>{Number(h.toFixed(2))}h</span>
               </div>
