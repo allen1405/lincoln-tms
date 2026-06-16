@@ -275,7 +275,7 @@ const rescheduleAutoReminder = async (user, prev) => {
   audit(user,"create","reminder",null,`${prev.customer_name||""} — ${prev.equipment_label||""}`,`auto-rescheduled +${prev.auto_days} days`);
 };
 
-const Modal = ({title,onClose,children,wide}) => {
+const Modal = ({title,onClose,children,wide,xwide}) => {
   const vp = useViewport();
   const fullSheet = vp.isMobile; // tier-based (hysteresis-stable), not raw width
   // Lock body scroll while open — otherwise scrolling past the end of a long modal
@@ -287,7 +287,7 @@ const Modal = ({title,onClose,children,wide}) => {
   }, []);
   const containerStyle = fullSheet
     ? {background:"#fff",width:"100vw",overflow:"auto",overscrollBehavior:"contain",borderRadius:0,boxShadow:"none",paddingBottom:"env(safe-area-inset-bottom, 0px)"}
-    : {background:"#fff",borderRadius:12,width:wide?"min(800px,98vw)":"min(600px,95vw)",maxHeight:"90vh",overflow:"auto",overscrollBehavior:"contain",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"};
+    : {background:"#fff",borderRadius:12,width:xwide?"min(1180px,96vw)":wide?"min(800px,98vw)":"min(600px,95vw)",maxHeight:"90vh",overflow:"auto",overscrollBehavior:"contain",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"};
   const overlayStyle = fullSheet
     ? {position:"fixed",inset:0,zIndex:1000}
     : {position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16};
@@ -945,13 +945,14 @@ const WorkOrders = () => {
   const openAdd=()=>{pickedEquip.current=false;setFormEquipItems(null);setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
   const openEdit=(w)=>{pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
-  const saveEdit=async()=>{
+  const saveEdit=async(combined)=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
+    const renumbered=id!==editId;
     // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
     const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,equipment_id:form.equipment_id||null,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
-    if(id!==editId){
+    if(renumbered){
       // The FK cascade covers jobs/parts/notes, but photos are keyed by entity_id
       // STRING ("work_order/<id>" and "dot_item <id>__<key>"), and reminders /
       // dot_inspections may not cascade — fix them up so nothing detaches on renumber.
@@ -968,24 +969,26 @@ const WorkOrders = () => {
       const bad=rs.find(r=>r.error);
       if(bad)alert("WO renumbered, but some linked records could not be updated: "+bad.error.message);
     }
-    audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[id!==editId&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
-    closeWoModal();loadWos();
+    audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[renumbered&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
+    if(!combined){closeWoModal();loadWos();}
+    else if(renumbered){closeCombined();} // editId/jobsModal.id now stale — reopen cleanly under the new number
+    else {loadWos();setJobsModal(prev=>prev?{...prev,id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,description:form.description,status:form.status}:prev);}
   };
-  const voidWo=async(id,fromModal)=>{
+  const voidWo=async(id,ctx)=>{
     if(!confirm(`Void ${id}? It will move to the Voided bucket but can be restored later.`))return;
     const prev=wos.find(w=>w.id===id);
     const res=await sb.from('work_orders').update({is_voided:true,voided_at:new Date().toISOString(),voided_by:user.name}).eq('id',id);
     if(res.error){alert("Could not void: "+res.error.message);return;}
     audit(user,"update","work_order",id,`${id} — ${prev?.customer||""}`,`voided (was ${prev?.status||"—"})`);
-    if(fromModal) closeWoModal();
+    if(ctx==="combined") closeCombined(); else if(ctx==="standalone") closeWoModal();
     loadWos();
   };
-  const restoreWo=async(id,fromModal)=>{
+  const restoreWo=async(id,ctx)=>{
     const prev=wos.find(w=>w.id===id);
     const res=await sb.from('work_orders').update({is_voided:false,voided_at:null,voided_by:null}).eq('id',id);
     if(res.error){alert("Could not restore: "+res.error.message);return;}
     audit(user,"update","work_order",id,`${id} — ${prev?.customer||""}`,"restored from voided");
-    if(fromModal) closeWoModal();
+    if(ctx==="combined") closeCombined(); else if(ctx==="standalone") closeWoModal();
     loadWos();
   };
   const addCustomer=async()=>{
@@ -1057,6 +1060,18 @@ const WorkOrders = () => {
     loadEqItems(jobsModal);
   };
   const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id),loadEqItems(wo)]);};
+  const closeWoDetails=()=>{setJobsModal(null);setNoteText("");loadWos();};
+  // Desktop combined view: one wide modal showing the editable form (left) + the details tabs (right).
+  // Populates BOTH the form state (for editing) and the details state (jobs/parts/etc.) at once.
+  const openCombined=async(w)=>{
+    pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);
+    setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
+    setEditId(w.id);setWoErr("");
+    setJobsModal(w);setJobTab("jobs");setShopSupply(w.shop_supply||"");shopSupplySaved.current=w.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});
+    await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w)]);
+  };
+  const closeCombined=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");setJobsModal(null);setNoteText("");loadWos();};
+  const openWoCard=(w)=>vp.isDesktop?openCombined(w):openJobs(w);
   const saveWoReminder=async()=>{
     const t=(remForm.note||"").trim(); if(!t)return;
     const payload={customer_name:jobsModal.customer,equipment_label:jobsModal.unit_number||"",work_order_id:jobsModal.id,reminder_date:remForm.reminder_date||null,note:t,created_by:user.name};
@@ -1339,7 +1354,7 @@ const WorkOrders = () => {
                 <td style={{padding:"10px 14px",fontSize:12,borderBottom:"1px solid #f5f5f5",color:"#555"}}>{w.voided_at?fmtDate(w.voided_at):"—"}</td>
                 <td style={{padding:"10px 14px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.voided_by||"—"}</td>
                 <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",textAlign:"right"}}>
-                  <button onClick={()=>restoreWo(w.id,false)} style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>↺ Restore</button>
+                  <button onClick={()=>restoreWo(w.id)} style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>↺ Restore</button>
                 </td>
               </tr>
             ));})()}</tbody>
