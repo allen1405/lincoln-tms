@@ -65,6 +65,8 @@ body:not([data-tier="desktop"]) .tab-btn { padding: 12px 14px; font-size: 13px; 
 const {createClient} = supabase;
 const sb = createClient('https://paytgvlfkqpyyxoqvaqn.supabase.co','sb_publishable_8U6IiUfM6Q9QaJ5tP0uhMQ_cN-rUNrv');
 const EQUIP_TYPES = ["Truck","Trailer","Camper","Van","Pickup","Other"];
+// Color per vehicle type for the at-a-glance badge in the WO title.
+const VTYPE_COLOR = {Truck:"#2980b9",Trailer:"#e67e22",Camper:"#d35400",Van:"#8e44ad",Pickup:"#16a085",Other:"#7f8c8d"};
 const WO_STATUSES = ["Waiting list","Check-in","Inspection","In progress","Waiting for parts","Done","Waiting on payment","Paid"];
 const PART_STATUSES_ORDERED = ["Pending Order","Ordered","On Stock"]; // low → high; aggregate = lowest seen
 const aggregatePartsStatus = parts => {
@@ -859,7 +861,7 @@ const WorkOrders = () => {
   const [woReminders,setWoReminders]=useState([]);
   const [eqItems,setEqItems]=useState(null); // {equipment, items} for the open WO's linked equipment
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
-  const empty={customer:"",unit_number:"",vin:"",equipment_id:null,mechanic:"",description:"",labor:"",parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
+  const empty={customer:"",unit_number:"",vin:"",equipment_id:null,vehicle_type:"",mechanic:"",description:"",labor:"",parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [formEquipItems,setFormEquipItems]=useState(null); // {equipment, items} → amber "open work" panel in the WO form
   const pickedEquip=React.useRef(false); // true when equipment_id came from the picker (or an existing WO) — those links are durable; auto-resolved ones are not
@@ -885,6 +887,7 @@ const WorkOrders = () => {
       if(cancelled)return;
       if(lookupFailed&&!eq){setFormEquipItems(null);return;} // network blip: keep the form untouched, just hide the panel
       if((eq?eq.id:null)!==form.equipment_id) setForm(p=>({...p,equipment_id:eq?eq.id:null}));
+      if(eq&&eq.type) setForm(p=>p.vehicle_type?p:{...p,vehicle_type:eq.type}); // fill Truck/Trailer from the matched unit when not set
       if(!eq){setFormEquipItems(null);return;}
       const{data:items}=await sb.from('reminders').select('*').eq('equipment_id',eq.id).eq('completed',false).order('created_at',{ascending:false});
       if(cancelled)return;
@@ -951,14 +954,14 @@ const WorkOrders = () => {
     closeWoModal();loadWos();
   };
   const openAdd=()=>{pickedEquip.current=false;setFormEquipItems(null);setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
-  const openEdit=(w)=>{pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
+  const openEdit=(w)=>{pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
   const saveEdit=async(combined)=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
     const renumbered=id!==editId;
     // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
-    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,equipment_id:form.equipment_id||null,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
+    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,equipment_id:form.equipment_id||null,vehicle_type:form.vehicle_type||null,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
     if(renumbered){
       // The FK cascade covers jobs/parts/notes, but photos are keyed by entity_id
@@ -980,7 +983,7 @@ const WorkOrders = () => {
     audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[renumbered&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     if(!combined){closeWoModal();loadWos();}
     else if(renumbered){closeCombined();} // editId/jobsModal.id now stale — reopen cleanly under the new number
-    else {loadWos();setJobsModal(prev=>prev?{...prev,id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,description:form.description,status:form.status}:prev);}
+    else {loadWos();setJobsModal(prev=>prev?{...prev,id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,vehicle_type:form.vehicle_type||null,description:form.description,status:form.status}:prev);}
   };
   const voidWo=async(id,ctx)=>{
     if(!confirm(`Void ${id}? It will move to the Voided bucket but can be restored later.`))return;
@@ -1073,7 +1076,7 @@ const WorkOrders = () => {
   // Populates BOTH the form state (for editing) and the details state (jobs/parts/etc.) at once.
   const openCombined=async(w)=>{
     pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);
-    setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
+    setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
     setEditId(w.id);setWoErr("");setCombinedOpen(true);
     setJobsModal(w);setJobTab("jobs");setShopSupply(w.shop_supply||"");shopSupplySaved.current=w.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});
     await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w)]);
@@ -1309,7 +1312,7 @@ const WorkOrders = () => {
   };
   const selEquip=(e)=>{
     pickedEquip.current=true;
-    setForm(p=>({...p,equipment_id:e.id,unit_number:e.unit_number||e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
+    setForm(p=>({...p,equipment_id:e.id,vehicle_type:e.type||p.vehicle_type,unit_number:e.unit_number||e.vin||e.license_plate||`${e.type}-${e.id}`,vin:e.vin||""}));
     setEquipModal(null);
   };
 
@@ -1348,6 +1351,7 @@ const WorkOrders = () => {
         </div>
       )}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        <Field label="Type" value={form.vehicle_type} onChange={v=>setForm(p=>({...p,vehicle_type:v}))} options={["",...EQUIP_TYPES]}/>
         <Field label="VIN" value={form.vin} onChange={v=>setForm(p=>({...p,vin:v}))} required/>
         <Field label="Created by" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...mechanics]} required/>
         <Field label="Status" value={form.status} onChange={v=>setForm(p=>({...p,status:v}))} options={WO_STATUSES}/>
@@ -1565,7 +1569,7 @@ const WorkOrders = () => {
       {equipModal&&<EquipmentModal customerId={equipModal.id} customerName={equipModal.name} onClose={()=>setEquipModal(null)} onSelect={selEquip}/>}
 
       {jobsModal&&(
-        <Modal title={`${jobsModal.id} — ${jobsModal.customer} (${jobsModal.unit_number})`} onClose={vp.isDesktop?closeCombined:closeWoDetails} wide={!vp.isDesktop} xwide={vp.isDesktop}>
+        <Modal title={<span>{jobsModal.id} — {jobsModal.customer} ({jobsModal.unit_number}){jobsModal.vehicle_type&&<span style={{marginLeft:8,padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:700,verticalAlign:"middle",background:(VTYPE_COLOR[jobsModal.vehicle_type]||"#7f8c8d")+"22",color:VTYPE_COLOR[jobsModal.vehicle_type]||"#7f8c8d"}}>{jobsModal.vehicle_type}</span>}</span>} onClose={vp.isDesktop?closeCombined:closeWoDetails} wide={!vp.isDesktop} xwide={vp.isDesktop}>
           {/* Desktop: editable form (left) + details tabs (right), each scrolls on its own.
               Mobile/tablet: details only, exactly as before (the form is its own modal). */}
           <div style={vp.isDesktop?{display:"flex",gap:24,alignItems:"flex-start"}:undefined}>
