@@ -858,10 +858,12 @@ const WorkOrders = () => {
   const [formEquipItems,setFormEquipItems]=useState(null); // {equipment, items} → amber "open work" panel in the WO form
   const pickedEquip=React.useRef(false); // true when equipment_id came from the picker (or an existing WO) — those links are durable; auto-resolved ones are not
   const [editId,setEditId]=useState(null);
+  const [combinedOpen,setCombinedOpen]=useState(false); // desktop combined view active — the form is live but `modal` stays false
   // Resolve typed equipment so deferred work surfaces even without the picker:
   // exact VIN, else customer+unit number, else a durable picker-set link.
+  // Runs whenever the form is actually live: the standalone modal OR the desktop combined view.
   useEffect(()=>{
-    if(!modal){setFormEquipItems(null);return;}
+    if(!modal&&!combinedOpen){setFormEquipItems(null);return;}
     let cancelled=false;
     const t=setTimeout(async()=>{
       let eq=null, lookupFailed=false;
@@ -884,7 +886,7 @@ const WorkOrders = () => {
       setFormEquipItems(open.length?{equipment:eq,items:open}:null);
     },500);
     return()=>{cancelled=true;clearTimeout(t);};
-  },[modal,form.vin,form.unit_number,form.customer,form.equipment_id,customers,editId]);
+  },[modal,combinedOpen,form.vin,form.unit_number,form.customer,form.equipment_id,customers,editId]);
   const [woErr,setWoErr]=useState("");
   const [mechanics,setMechanics]=useState([]);
 
@@ -1066,11 +1068,11 @@ const WorkOrders = () => {
   const openCombined=async(w)=>{
     pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);
     setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
-    setEditId(w.id);setWoErr("");
+    setEditId(w.id);setWoErr("");setCombinedOpen(true);
     setJobsModal(w);setJobTab("jobs");setShopSupply(w.shop_supply||"");shopSupplySaved.current=w.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});
     await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w)]);
   };
-  const closeCombined=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");setJobsModal(null);setNoteText("");loadWos();};
+  const closeCombined=()=>{setModal(false);setCombinedOpen(false);setEditId(null);setForm(empty);setWoErr("");setJobsModal(null);setNoteText("");loadWos();};
   const openWoCard=(w)=>vp.isDesktop?openCombined(w):openJobs(w);
   const saveWoReminder=async()=>{
     const t=(remForm.note||"").trim(); if(!t)return;
@@ -1561,8 +1563,8 @@ const WorkOrders = () => {
           {/* Desktop: editable form (left) + details tabs (right), each scrolls on its own.
               Mobile/tablet: details only, exactly as before (the form is its own modal). */}
           <div style={vp.isDesktop?{display:"flex",gap:24,alignItems:"flex-start"}:undefined}>
-            {vp.isDesktop&&<div style={{width:400,flexShrink:0,overflowY:"auto",maxHeight:"78vh",paddingRight:4}}>{renderWoForm("combined")}</div>}
-            <div style={vp.isDesktop?{flex:1,minWidth:0,overflowY:"auto",maxHeight:"78vh"}:undefined}>
+            {vp.isDesktop&&<div style={{width:400,flexShrink:0,overflowY:"auto",maxHeight:"calc(90vh - 130px)",paddingRight:4}}>{renderWoForm("combined")}</div>}
+            <div style={vp.isDesktop?{flex:1,minWidth:0,overflowY:"auto",maxHeight:"calc(90vh - 130px)"}:undefined}>
           {(()=>{const c=customers.find(c=>c.name===jobsModal.customer);if(!c||(!c.phone&&!c.email))return null;return (
             <div style={{display:"flex",flexWrap:"wrap",gap:14,padding:"10px 14px",marginBottom:14,background:"#f8f9fa",border:"1px solid #e5e5e5",borderRadius:8,fontSize:13}}>
               {c.phone&&<a href={`tel:${c.phone.replace(/[^0-9+]/g,"")}`} style={{color:"#1a1a2e",textDecoration:"none",fontWeight:600,display:"flex",alignItems:"center",gap:6}}>📞 <span style={{textDecoration:"underline",textDecorationStyle:"dotted"}}>{c.phone}</span></a>}
