@@ -267,6 +267,10 @@ const fmtDay = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{mont
 const ymdLocal = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const todayLocal = () => ymdLocal(new Date());
 const addDaysLocal = n => { const d=new Date(); d.setDate(d.getDate()+Number(n)); return ymdLocal(d); };
+// Revenue model: work_orders.labor is an HOURLY RATE. Revenue = rate × (sum of the WO's
+// job hours) + parts. woHoursMap turns a flat jobs list into work_order_id → total hours.
+const woHoursMap = jobs => { const m={}; (jobs||[]).forEach(j=>{ if(j.work_order_id!=null) m[j.work_order_id]=(m[j.work_order_id]||0)+Number(j.labor||0); }); return m; };
+const woRevenue = (w,hours) => (Number(w.labor)||0)*(hours||0) + (Number(w.parts)||0);
 // Auto-recurring reminders (auto_days): completing one schedules the next occurrence.
 const rescheduleAutoReminder = async (user, prev) => {
   if (!prev?.auto_days) return;
@@ -472,7 +476,7 @@ const NAV = [
   {id:"employees",label:"Employees",icon:"👤",s:"MENU"},
   {id:"salaries",label:"Salaries",icon:"💰",s:"MENU"},
   {id:"inventory",label:"Inventory",icon:"📦",s:"SUPPORT",shop:true},
-  {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT"},
+  {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT",admin:true},
   {id:"invoices",label:"Invoices",icon:"🧾",s:"SUPPORT"},
   {id:"estimates",label:"Estimates",icon:"📋",s:"SUPPORT"},
   {id:"auditlog",label:"Audit Log",icon:"🛡️",s:"SUPPORT"},
@@ -526,11 +530,12 @@ const Dashboard = ({onNav}) => {
       sb.from('work_orders').select('*').neq('is_voided',true).order('created_at',{ascending:false}),
       sb.from('customers').select('*').order('created_at',{ascending:false}),
       sb.from('reminders').select('*').eq('completed',false).lt('reminder_date',todayLocal()),
-      sb.from('jobs').select('work_order_id,mechanic')
+      sb.from('jobs').select('work_order_id,mechanic,labor')
     ]).then(([w,c,r,j])=>{setWos(w.data||[]);setCusts(c.data||[]);setReminders(r.data||[]);setJobs(j.data||[]);setLoading(false);});
   },[]);
   if(loading) return <Loading/>;
-  const revenue=wos.reduce((s,w)=>s+Number(w.labor)+Number(w.parts),0);
+  const hrs=woHoursMap(jobs);
+  const revenue=wos.reduce((s,w)=>s+woRevenue(w,hrs[w.id]),0);
   const linkStyle={color:"#c0392b",fontSize:13,fontWeight:600,cursor:"pointer",textDecoration:"none",background:"none",border:"none",padding:0};
   // Mechanic "My WOs" tiles vs full dashboard tiles. "Mine" = creator OR any assigned job is me.
   const myName=(user?.name||"").toLowerCase();
@@ -547,7 +552,8 @@ const Dashboard = ({onNav}) => {
         {l:"Active WOs",v:wos.filter(w=>w.status!=="Done").length,i:"🔧",c:"#3498db",page:"workorders"},
         {l:"In Progress",v:wos.filter(w=>w.status==="In progress").length,i:"⚙️",c:"#8e44ad",page:"workorders"},
         {l:"Customers",v:custs.length,i:"👥",c:"#27ae60",page:"customers"},
-        {l:"Revenue",v:`$${revenue.toLocaleString()}`,i:"💰",c:"#e67e22",page:"reports"}
+        // Revenue is admin-only (Reports is too) — omit the tile for everyone else.
+        ...(user.role==="admin"?[{l:"Revenue",v:`$${revenue.toLocaleString()}`,i:"💰",c:"#e67e22",page:"reports"}]:[])
       ];
   const cols=vp.isMobile?"repeat(2,1fr)":"repeat(4,1fr)";
   return (
@@ -853,7 +859,7 @@ const WorkOrders = () => {
   const [woReminders,setWoReminders]=useState([]);
   const [eqItems,setEqItems]=useState(null); // {equipment, items} for the open WO's linked equipment
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
-  const empty={customer:"",unit_number:"",vin:"",equipment_id:null,mechanic:"",description:"",labor:0,parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
+  const empty={customer:"",unit_number:"",vin:"",equipment_id:null,mechanic:"",description:"",labor:"",parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [formEquipItems,setFormEquipItems]=useState(null); // {equipment, items} → amber "open work" panel in the WO form
   const pickedEquip=React.useRef(false); // true when equipment_id came from the picker (or an existing WO) — those links are durable; auto-resolved ones are not
@@ -1346,7 +1352,7 @@ const WorkOrders = () => {
         <Field label="Created by" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...mechanics]} required/>
         <Field label="Status" value={form.status} onChange={v=>setForm(p=>({...p,status:v}))} options={WO_STATUSES}/>
         <Field label="Date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))} type="date"/>
-        <Field label="Labor ($)" value={form.labor} onChange={v=>setForm(p=>({...p,labor:v}))} type="number"/>
+        <Field label="Labor rate ($/hr)" value={form.labor} onChange={v=>setForm(p=>({...p,labor:v}))} type="number" placeholder="e.g. 160"/>
         <Field label="Parts ($)" value={form.parts} onChange={v=>setForm(p=>({...p,parts:v}))} type="number"/>
       </div>
       <div style={{fontSize:12,fontWeight:700,color:"#888",textTransform:"uppercase",letterSpacing:0.5,margin:"14px 0 8px"}}>Vehicle readings <span style={{textTransform:"none",fontWeight:400,color:"#aaa"}}>(leave blank if N/A)</span></div>
@@ -2578,24 +2584,27 @@ const Settings = () => {
 
 // ─── SALARIES ────────────────────────────────────────────────────────────────
 const Salaries = () => {
-  const [wos,setWos]=useState([]); const [users,setUsers]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').neq('is_voided',true),sb.from('users').select('*').eq('active',true)]).then(([w,u])=>{setWos(w.data||[]);setUsers(u.data||[]);setLoading(false);});},[]);
+  const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [users,setUsers]=useState([]); const [loading,setLoading]=useState(true);
+  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').neq('is_voided',true),sb.from('jobs').select('work_order_id,mechanic,labor'),sb.from('users').select('*').eq('active',true)]).then(([w,j,u])=>{setWos(w.data||[]);setJobs(j.data||[]);setUsers(u.data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
+  // Labor revenue is earned per job: the WO's hourly rate × the hours that mechanic logged on it.
+  const woById=Object.fromEntries(wos.map(w=>[w.id,w]));
+  const mechHrs={}, mechRev={};
+  jobs.forEach(j=>{ const w=woById[j.work_order_id]; if(!w||!j.mechanic) return; const h=Number(j.labor||0); mechHrs[j.mechanic]=(mechHrs[j.mechanic]||0)+h; mechRev[j.mechanic]=(mechRev[j.mechanic]||0)+(Number(w.labor)||0)*h; });
   return (
     <div>
       <h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Salaries</h1>
       <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-        <div style={{padding:"16px 20px",borderBottom:"1px solid #f0f0f0",display:"flex",justifyContent:"space-between"}}><h3 style={{margin:0,fontSize:15,fontWeight:700}}>Employee Salaries</h3><span style={{fontSize:13,color:"#888",background:"#f8f9fa",padding:"6px 12px",borderRadius:8}}>Mar 2026</span></div>
+        <div style={{padding:"16px 20px",borderBottom:"1px solid #f0f0f0"}}><h3 style={{margin:0,fontSize:15,fontWeight:700}}>Employee Labor Summary</h3></div>
         <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
-          <thead><tr><TH c="Employee"/><TH c="Role"/><TH c="WOs Assigned"/><TH c="Labor Revenue"/><TH c="Total to Pay"/></tr></thead>
+          <thead><tr><TH c="Employee"/><TH c="Role"/><TH c="Hours Worked"/><TH c="Labor Revenue"/><TH c="Total to Pay"/></tr></thead>
           <tbody>{users.map(u=>{
-            const myWos=wos.filter(w=>w.mechanic===u.name);
-            const rev=myWos.reduce((s,w)=>s+Number(w.labor),0);
+            const h=mechHrs[u.name]||0; const rev=mechRev[u.name]||0;
             return <tr key={u.id}>
               <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5",fontWeight:600}}>{u.name}</td>
               <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5",fontSize:13,textTransform:"capitalize"}}>{u.role}</td>
-              <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5",fontSize:13}}>{myWos.length}</td>
-              <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5",fontSize:13,fontWeight:600,color:"#27ae60"}}>${rev.toLocaleString()}</td>
+              <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5",fontSize:13}}>{Number(h.toFixed(2))}h</td>
+              <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5",fontSize:13,fontWeight:600,color:"#27ae60"}}>${Math.round(rev).toLocaleString()}</td>
               <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5",fontSize:13}}>—</td>
             </tr>;
           })}</tbody>
@@ -2606,23 +2615,44 @@ const Salaries = () => {
 };
 
 // ─── REPORTS / INVOICES / ESTIMATES ──────────────────────────────────────────
+// Local YYYY-MM-DD of the Monday that starts the current week.
+const weekStartLocal = () => { const d=new Date(); const off=(d.getDay()+6)%7; d.setDate(d.getDate()-off); return ymdLocal(d); };
 const Reports = () => {
+  const user = useContext(UserCtx);
   const vp = useViewport();
-  const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{sb.from('work_orders').select('*').neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
+  const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [loading,setLoading]=useState(true);
+  const [period,setPeriod]=useState("month"); // today | week | month | all — drives Hours by Mechanic
+  useEffect(()=>{Promise.all([
+    sb.from('work_orders').select('*').neq('is_voided',true),
+    sb.from('jobs').select('work_order_id,mechanic,labor')
+  ]).then(([w,j])=>{setWos(w.data||[]);setJobs(j.data||[]);setLoading(false);});},[]);
+  if(user.role!=="admin") return <div style={{padding:40,textAlign:"center",color:"#888"}}>⛔ Admin access only.</div>;
   if(loading) return <Loading/>;
-  const labor=wos.reduce((s,w)=>s+Number(w.labor),0); const parts=wos.reduce((s,w)=>s+Number(w.parts),0);
+  const hrs=woHoursMap(jobs);
+  const labor=wos.reduce((s,w)=>s+(Number(w.labor)||0)*(hrs[w.id]||0),0); const parts=wos.reduce((s,w)=>s+(Number(w.parts)||0),0);
+
+  // Hours by mechanic, bucketed by each job's WO service date.
+  const woById=Object.fromEntries(wos.map(w=>[w.id,w]));
+  const today=todayLocal(), ws=weekStartLocal(), mo=today.slice(0,7);
+  const inPeriod=d=>!d?false:period==="all"?true:period==="today"?d===today:period==="week"?d>=ws:d.slice(0,7)===mo;
+  const mechHours={};
+  jobs.forEach(j=>{ const w=woById[j.work_order_id]; if(!w||!j.mechanic) return; if(!inPeriod(w.date)) return; mechHours[j.mechanic]=(mechHours[j.mechanic]||0)+Number(j.labor||0); });
+  const mechRows=Object.entries(mechHours).filter(([,h])=>h>0).sort((a,b)=>b[1]-a[1]);
+  const totalHours=mechRows.reduce((s,[,h])=>s+h,0);
+  const periods=[["today","Today"],["week","This week"],["month","This month"],["all","All time"]];
+
   return (
     <div>
       <h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Reports</h1>
-      <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"1fr 1fr",gap:20}}>
+      <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"1fr 1fr",gap:20,marginBottom:20}}>
         <div style={{background:"#fff",borderRadius:12,padding:24,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-          <h3 style={{margin:"0 0 16px",fontSize:16,fontWeight:700}}>Revenue</h3>
-          <div style={{fontSize:32,fontWeight:800,marginBottom:16}}>${(labor+parts).toLocaleString()}</div>
+          <h3 style={{margin:"0 0 4px",fontSize:16,fontWeight:700}}>Revenue</h3>
+          <div style={{fontSize:11,color:"#aaa",marginBottom:14}}>Labor rate × hours worked, plus parts.</div>
+          <div style={{fontSize:32,fontWeight:800,marginBottom:16}}>${Math.round(labor+parts).toLocaleString()}</div>
           {[{l:"Labor",v:labor,c:"#3498db"},{l:"Parts",v:parts,c:"#2ecc71"}].map(i=>(
             <div key={i.l} style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
               <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:10,height:10,borderRadius:"50%",background:i.c}}/><span style={{fontSize:13,color:"#666"}}>{i.l}</span></div>
-              <span style={{fontSize:13,fontWeight:600}}>${i.v.toLocaleString()}</span>
+              <span style={{fontSize:13,fontWeight:600}}>${Math.round(i.v).toLocaleString()}</span>
             </div>
           ))}
         </div>
@@ -2631,13 +2661,40 @@ const Reports = () => {
           {WO_STATUSES.map(s=><div key={s} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}><span><Badge s={s}/></span><span style={{fontWeight:600}}>{wos.filter(w=>w.status===s).length}</span></div>)}
         </div>
       </div>
+      <div style={{background:"#fff",borderRadius:12,padding:24,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:16}}>
+          <h3 style={{margin:0,fontSize:16,fontWeight:700}}>Hours by Mechanic</h3>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {periods.map(([k,l])=>(
+              <button key={k} onClick={()=>setPeriod(k)} style={{padding:"7px 14px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:period===k?700:500,background:period===k?"#1a1a2e":"#f0f0f0",color:period===k?"#fff":"#555",minHeight:vp.isMobile?40:"auto"}}>{l}</button>
+            ))}
+          </div>
+        </div>
+        {mechRows.length===0?<p style={{color:"#aaa",fontSize:13,textAlign:"center",padding:20}}>No hours logged in this period.</p>:(
+          <div>
+            {mechRows.map(([m,h])=>(
+              <div key={m} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #f5f5f5"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0}}>
+                  <span style={{fontSize:14,fontWeight:600,whiteSpace:"nowrap"}}>👨‍🔧 {m}</span>
+                  <div style={{flex:1,height:8,background:"#f0f0f0",borderRadius:4,overflow:"hidden",minWidth:40}}><div style={{width:`${totalHours?Math.round(h/Math.max(...mechRows.map(r=>r[1]))*100):0}%`,height:"100%",background:"#3498db"}}/></div>
+                </div>
+                <span style={{fontSize:14,fontWeight:700,marginLeft:12,whiteSpace:"nowrap"}}>{Number(h.toFixed(2))}h</span>
+              </div>
+            ))}
+            <div style={{display:"flex",justifyContent:"space-between",paddingTop:12,fontSize:14,fontWeight:800}}>
+              <span>Total</span><span>{Number(totalHours.toFixed(2))}h</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
 const Invoices = () => {
-  const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{sb.from('work_orders').select('*').eq('status','Done').neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
+  const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [loading,setLoading]=useState(true);
+  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').eq('status','Done').neq('is_voided',true),sb.from('jobs').select('work_order_id,labor')]).then(([w,j])=>{setWos(w.data||[]);setJobs(j.data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
+  const hrs=woHoursMap(jobs);
   return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Invoices</h1></div>
     <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
       <thead><tr><TH c="Invoice Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/><TH c="Status"/></tr></thead>
@@ -2647,16 +2704,17 @@ const Invoices = () => {
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.id}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.customer}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.unit_number}</td>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:700,color:"#27ae60"}}>${(Number(w.labor)+Number(w.parts)).toLocaleString()}</td>
+          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:700,color:"#27ae60"}}>${Math.round(woRevenue(w,hrs[w.id])).toLocaleString()}</td>
           <td style={{padding:"12px 16px",borderBottom:"1px solid #f5f5f5"}}><Badge s="Done"/></td>
         </tr>
       ))}</tbody>
     </table></div></div>);
 };
 const Estimates = () => {
-  const [wos,setWos]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{sb.from('work_orders').select('*').in('status',['Waiting list','Inspection']).neq('is_voided',true).then(({data})=>{setWos(data||[]);setLoading(false);});},[]);
+  const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [loading,setLoading]=useState(true);
+  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').in('status',['Waiting list','Inspection']).neq('is_voided',true),sb.from('jobs').select('work_order_id,labor')]).then(([w,j])=>{setWos(w.data||[]);setJobs(j.data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
+  const hrs=woHoursMap(jobs);
   return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1></div>
     <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
       <thead><tr><TH c="Estimate Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/></tr></thead>
@@ -2666,7 +2724,7 @@ const Estimates = () => {
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.id}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.customer}</td>
           <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.unit_number}</td>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:600,color:"#e67e22"}}>${(Number(w.labor)+Number(w.parts)).toLocaleString()}</td>
+          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:600,color:"#e67e22"}}>${Math.round(woRevenue(w,hrs[w.id])).toLocaleString()}</td>
         </tr>
       ))}</tbody>
     </table></div></div>);
@@ -2887,7 +2945,7 @@ const App = () => {
   const vp = useViewport();
   const isMech = user?.role === "mechanic";
   const shopActive = !!user && isMech && mode === "shop" && !vp.isDesktop;
-  const activeNav = shopActive ? NAV.filter(n=>n.shop) : NAV;
+  const activeNav = (shopActive ? NAV.filter(n=>n.shop) : NAV).filter(n=>!n.admin || user.role==="admin");
   // Guard: if mechanic flips to shop view while on a hidden page, drop back to a shop-visible one.
   // Must be declared before any early return to keep hook order stable.
   useEffect(()=>{
