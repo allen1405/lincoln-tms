@@ -2982,7 +2982,7 @@ const App = () => {
   const vp = useViewport();
   const isMech = user?.role === "mechanic";
   const shopActive = !!user && isMech && mode === "shop" && !vp.isDesktop;
-  const activeNav = (shopActive ? NAV.filter(n=>n.shop) : NAV).filter(n=>!n.admin || user.role==="admin");
+  const activeNav = (shopActive ? NAV.filter(n=>n.shop) : NAV).filter(n=>!n.admin || user?.role==="admin");
   // Guard: if mechanic flips to shop view while on a hidden page, drop back to a shop-visible one.
   // Must be declared before any early return to keep hook order stable.
   useEffect(()=>{
