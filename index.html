@@ -315,12 +315,14 @@ const Modal = ({title,onClose,children,wide,xwide}) => {
     </div>
   );
 };
-const Field = ({label,value,onChange,type="text",options,required,placeholder,autoComplete,inputMode}) => {
+const Field = ({label,value,onChange,type="text",options,required,placeholder,autoComplete,inputMode,searchable}) => {
   const id = React.useId();
   return (
   <div style={{marginBottom:14}}>
     <label htmlFor={id} style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>{label}{required&&<span style={{color:"#c0392b"}}> *</span>}</label>
-    {options ? <select id={id} value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>{options.map(o=><option key={o} value={o}>{o}</option>)}</select>
+    {options ? (searchable
+      ? <Combobox value={value} onChange={onChange} options={options.filter(o=>o!=="")} placeholder={placeholder||"Search…"}/>
+      : <select id={id} value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>{options.map(o=><option key={o} value={o}>{o}</option>)}</select>)
     : type==="textarea" ? <textarea id={id} value={value} onChange={e=>onChange(e.target.value)} rows={3} placeholder={placeholder||""} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,resize:"vertical"}}/>
     : <input id={id} type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||""} autoComplete={autoComplete} inputMode={inputMode} style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14}}/>}
   </div>
@@ -2314,7 +2316,7 @@ const Appointments = () => {
       </div>
       {modal&&(
         <Modal title="New Appointment" onClose={()=>setModal(false)}>
-          <Field label="Company" value={form.company} onChange={v=>setForm(p=>({...p,company:v}))} options={["",...customers.map(c=>c.name)]} required/>
+          <Field label="Company" value={form.company} onChange={v=>setForm(p=>({...p,company:v}))} options={["",...customers.map(c=>c.name)]} searchable placeholder="Search customer…" required/>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <Field label="Unit Number" value={form.unit_number} onChange={v=>setForm(p=>({...p,unit_number:v}))}/>
             <Field label="VIN" value={form.vin} onChange={v=>setForm(p=>({...p,vin:v}))}/>
@@ -2517,7 +2519,7 @@ const RemindersPage = () => {
       )}
       {modal&&(
         <Modal title={editId?"Edit Reminder":"Create Reminder"} onClose={closeModal}>
-          <Field label="Customer" value={form.customer_name} onChange={v=>setForm(p=>({...p,customer_name:v,equipment_id:"",work_order_id:""}))} options={["",...customers.map(c=>c.name)]} required/>
+          <Field label="Customer" value={form.customer_name} onChange={v=>setForm(p=>({...p,customer_name:v,equipment_id:"",work_order_id:""}))} options={["",...customers.map(c=>c.name)]} searchable placeholder="Search customer…" required/>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <div style={{marginBottom:14}}>
               <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Equipment (optional)</label>
