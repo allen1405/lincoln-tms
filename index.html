@@ -276,10 +276,9 @@ const woRevenue = (w,hours) => (Number(w.labor)||0)*(hours||0) + (Number(w.parts
 // Fire after any reminder is completed / rescheduled / deleted so the overdue nav badge
 // reconciles immediately, instead of waiting for the next navigation/refresh.
 const bumpReminders = () => { try { window.dispatchEvent(new Event('reminders-changed')); } catch(_) {} };
-// A WO's end_date is auto-captured the moment it reaches Done (or a later payment stage) and
-// cleared if it reopens to an earlier stage. Existing end_date is preserved across Done→Paid.
-const DONE_STATUSES = ["Done","Waiting on payment","Paid"];
-const nextEndDate = (status,current) => DONE_STATUSES.includes(status) ? (current||todayLocal()) : null;
+// "Done" is this shop's terminal stage — it comes AFTER payment. A WO's end_date is captured
+// the moment it reaches Done (preserved on re-save) and cleared if it ever leaves Done.
+const nextEndDate = (status,current) => status==="Done" ? (current||todayLocal()) : null;
 // Auto-recurring reminders (auto_days): completing one schedules the next occurrence.
 const rescheduleAutoReminder = async (user, prev) => {
   if (!prev?.auto_days) return;
