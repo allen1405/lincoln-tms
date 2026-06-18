@@ -326,6 +326,37 @@ const Field = ({label,value,onChange,type="text",options,required,placeholder,au
   </div>
   );
 };
+// Searchable single-select. Looks like a dropdown but you type to filter a long list
+// (substring, case-insensitive). `options` = array of strings; value/onChange are the string.
+const Combobox = ({value,onChange,options,placeholder}) => {
+  const [open,setOpen]=useState(false);
+  const [q,setQ]=useState("");
+  const ref=React.useRef(null);
+  useEffect(()=>{ const h=e=>{ if(ref.current && !ref.current.contains(e.target)) setOpen(false); }; document.addEventListener("mousedown",h); return ()=>document.removeEventListener("mousedown",h); },[]);
+  const matches=(options||[]).filter(o=>o.toLowerCase().includes(q.trim().toLowerCase()));
+  const pick=o=>{ onChange(o); setOpen(false); setQ(""); };
+  return (
+    <div ref={ref} style={{position:"relative",flex:1,minWidth:0}}>
+      <input
+        value={open?q:(value||"")}
+        placeholder={placeholder||"Search…"}
+        onFocus={()=>{setOpen(true);setQ("");}}
+        onChange={e=>{setQ(e.target.value);setOpen(true);}}
+        onKeyDown={e=>{ if(e.key==="Enter"&&matches[0]){e.preventDefault();pick(matches[0]);} else if(e.key==="Escape"){setOpen(false);} }}
+        style={{width:"100%",padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}
+      />
+      {open&&(
+        <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:60,background:"#fff",border:"1px solid #ddd",borderRadius:8,marginTop:4,maxHeight:240,overflowY:"auto",boxShadow:"0 8px 24px rgba(0,0,0,0.14)"}}>
+          {matches.length===0
+            ? <div style={{padding:"10px 12px",color:"#aaa",fontSize:13}}>No matches</div>
+            : matches.map(o=>(
+                <div key={o} onMouseDown={e=>{e.preventDefault();pick(o);}} style={{padding:"10px 12px",cursor:"pointer",fontSize:14,borderBottom:"1px solid #f5f5f5",background:o===value?"#fef0ee":"#fff",fontWeight:o===value?600:400}}>{o}</div>
+              ))}
+        </div>
+      )}
+    </div>
+  );
+};
 // ─── PHOTOS ───────────────────────────────────────────────────────────────────
 // Client-side resize to keep storage + bandwidth reasonable. Returns a Blob.
 const resizePhoto = (file, maxWidth = 1600, quality = 0.85) => new Promise((resolve, reject) => {
@@ -1343,10 +1374,7 @@ const WorkOrders = () => {
       <div style={{marginBottom:14}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,color:"#555",marginBottom:5}}>Customer <span style={{color:"#c0392b"}}>*</span></label>
         <div style={{display:"flex",gap:8}}>
-          <select value={form.customer} onChange={e=>setForm(p=>({...p,customer:e.target.value}))} style={{flex:1,padding:"9px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,background:"#fff"}}>
-            <option value="">-- Select customer --</option>
-            {customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
-          </select>
+          <Combobox value={form.customer} onChange={name=>setForm(p=>({...p,customer:name}))} options={customers.map(c=>c.name)} placeholder="Search customer…"/>
           <button onClick={()=>setNewCustModal(true)} style={{padding:"9px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,whiteSpace:"nowrap"}}>+ New</button>
         </div>
       </div>
