@@ -276,6 +276,10 @@ const woRevenue = (w,hours) => (Number(w.labor)||0)*(hours||0) + (Number(w.parts
 // Fire after any reminder is completed / rescheduled / deleted so the overdue nav badge
 // reconciles immediately, instead of waiting for the next navigation/refresh.
 const bumpReminders = () => { try { window.dispatchEvent(new Event('reminders-changed')); } catch(_) {} };
+// A WO's end_date is auto-captured the moment it reaches Done (or a later payment stage) and
+// cleared if it reopens to an earlier stage. Existing end_date is preserved across Done→Paid.
+const DONE_STATUSES = ["Done","Waiting on payment","Paid"];
+const nextEndDate = (status,current) => DONE_STATUSES.includes(status) ? (current||todayLocal()) : null;
 // Auto-recurring reminders (auto_days): completing one schedules the next occurrence.
 const rescheduleAutoReminder = async (user, prev) => {
   if (!prev?.auto_days) return;
@@ -868,7 +872,7 @@ const WorkOrders = () => {
   const [woReminders,setWoReminders]=useState([]);
   const [eqItems,setEqItems]=useState(null); // {equipment, items} for the open WO's linked equipment
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
-  const empty={customer:"",unit_number:"",vin:"",equipment_id:null,vehicle_type:"",mechanic:"",description:"",labor:"",parts:0,status:"Waiting list",date:todayLocal(),is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
+  const empty={customer:"",unit_number:"",vin:"",equipment_id:null,vehicle_type:"",mechanic:"",description:"",labor:"",parts:0,status:"Waiting list",date:todayLocal(),end_date:null,is_road_call:false,truck_mileage:"",apu_hours:"",apu_hours_since_oil:"",reefer_hours:"",reefer_hours_since_oil:""};
   const [form,setForm]=useState(empty);
   const [formEquipItems,setFormEquipItems]=useState(null); // {equipment, items} → amber "open work" panel in the WO form
   const [ackEquip,setAckEquip]=useState(null); // {equipment, items} → acknowledge popup shown right after picking equipment with open reminders
@@ -956,20 +960,20 @@ const WorkOrders = () => {
   const add=async()=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
-    const res=await sb.from('work_orders').insert([{...form,id,vehicle_type:form.vehicle_type||null,labor:Number(form.labor),parts:Number(form.parts),truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}]).select().single();
+    const res=await sb.from('work_orders').insert([{...form,id,vehicle_type:form.vehicle_type||null,end_date:nextEndDate(form.status,null),labor:Number(form.labor),parts:Number(form.parts),truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}]).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not create work order: "+res.error.message);return;}
     audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     closeWoModal();loadWos();
   };
   const openAdd=()=>{pickedEquip.current=false;setFormEquipItems(null);setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
-  const openEdit=(w)=>{pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
+  const openEdit=(w)=>{pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),end_date:w.end_date??null,is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});setEditId(w.id);setModal(true);};
   const closeWoModal=()=>{setModal(false);setEditId(null);setForm(empty);setWoErr("");};
   const saveEdit=async(combined)=>{
     const id=(form.id||"").trim();
     if(!woValid(id)) return;
     const renumbered=id!==editId;
     // Changing id cascades to jobs/parts/notes via ON UPDATE CASCADE.
-    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,equipment_id:form.equipment_id||null,vehicle_type:form.vehicle_type||null,mechanic:form.mechanic,status:form.status,date:form.date,labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
+    const res=await sb.from('work_orders').update({id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,equipment_id:form.equipment_id||null,vehicle_type:form.vehicle_type||null,mechanic:form.mechanic,status:form.status,date:form.date,end_date:nextEndDate(form.status,form.end_date),labor:Number(form.labor),parts:Number(form.parts),description:form.description,is_road_call:form.is_road_call,truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}).eq('id',editId).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not save work order: "+res.error.message);return;}
     if(renumbered){
       // The FK cascade covers jobs/parts/notes, but photos are keyed by entity_id
@@ -991,7 +995,7 @@ const WorkOrders = () => {
     audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[renumbered&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
     if(!combined){closeWoModal();loadWos();}
     else if(renumbered){closeCombined();} // editId/jobsModal.id now stale — reopen cleanly under the new number
-    else {loadWos();setJobsModal(prev=>prev?{...prev,id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,vehicle_type:form.vehicle_type||null,description:form.description,status:form.status}:prev);}
+    else {loadWos();setJobsModal(prev=>prev?{...prev,id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,vehicle_type:form.vehicle_type||null,description:form.description,status:form.status,end_date:nextEndDate(form.status,form.end_date)}:prev);}
   };
   const voidWo=async(id,ctx)=>{
     if(!confirm(`Void ${id}? It will move to the Voided bucket but can be restored later.`))return;
@@ -1023,7 +1027,7 @@ const WorkOrders = () => {
   };
   const upd=async(id,status)=>{
     const prev=wos.find(w=>w.id===id);
-    const r=await must(sb.from('work_orders').update({status}).eq('id',id),"Could not change status");
+    const r=await must(sb.from('work_orders').update({status,end_date:nextEndDate(status,prev?.end_date)}).eq('id',id),"Could not change status");
     if(!r){loadWos();return;}
     audit(user,"status_change","work_order",id,`${id} — ${prev?.customer||""}`,`status: "${prev?.status||""}" → "${status}"`);
     loadWos();
@@ -1085,7 +1089,7 @@ const WorkOrders = () => {
   // Populates BOTH the form state (for editing) and the details state (jobs/parts/etc.) at once.
   const openCombined=async(w)=>{
     pickedEquip.current=!!w.equipment_id;setFormEquipItems(null);
-    setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
+    setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),end_date:w.end_date??null,is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
     setEditId(w.id);setWoErr("");setCombinedOpen(true);
     setJobsModal(w);setJobTab("jobs");setShopSupply(w.shop_supply||"");shopSupplySaved.current=w.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});
     await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w)]);
@@ -1367,10 +1371,11 @@ const WorkOrders = () => {
         <Field label="VIN" value={form.vin} onChange={v=>setForm(p=>({...p,vin:v}))} required/>
         <Field label="Created by" value={form.mechanic} onChange={v=>setForm(p=>({...p,mechanic:v}))} options={["",...mechanics]} required/>
         <Field label="Status" value={form.status} onChange={v=>setForm(p=>({...p,status:v}))} options={WO_STATUSES}/>
-        <Field label="Date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))} type="date"/>
+        <Field label="Start date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))} type="date"/>
         <Field label="Labor rate ($/hr)" value={form.labor} onChange={v=>setForm(p=>({...p,labor:v}))} type="number" placeholder="e.g. 160"/>
         <Field label="Parts ($)" value={form.parts} onChange={v=>setForm(p=>({...p,parts:v}))} type="number"/>
       </div>
+      {form.end_date&&<div style={{background:"#eafaf1",border:"1px solid #a9dfbf",borderRadius:8,padding:"8px 12px",margin:"4px 0 0",fontSize:13,color:"#1e8449",fontWeight:600}}>✅ Completed (end date): {fmtDay(form.end_date)} <span style={{fontWeight:400,color:"#7f8c8d"}}>— set automatically when moved to Done</span></div>}
       <div style={{fontSize:12,fontWeight:700,color:"#888",textTransform:"uppercase",letterSpacing:0.5,margin:"14px 0 8px"}}>Vehicle readings <span style={{textTransform:"none",fontWeight:400,color:"#aaa"}}>(leave blank if N/A)</span></div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
         <Field label="Truck mileage" value={form.truck_mileage} onChange={v=>setForm(p=>({...p,truck_mileage:v}))} type="number" placeholder="e.g. 234567"/>
@@ -1481,6 +1486,7 @@ const WorkOrders = () => {
                   <div style={{fontSize:11,color:"#888",marginBottom:4}}>{w.description}</div>
                   <div style={{fontSize:11,color:"#aaa",marginBottom:4}}>👨‍🔧 Created by {w.mechanic||"—"}</div>
                   <div style={{fontSize:11,fontWeight:600,color:"#27ae60",marginBottom:6}}>Labor: {jobLabor[w.id]||0}h · Parts: ${w.parts}</div>
+                  {w.end_date&&<div style={{fontSize:11,fontWeight:700,color:"#1e8449",marginBottom:6}}>✅ Completed {fmtDay(w.end_date)}</div>}
                   <select value={w.status} onChange={e=>upd(w.id,e.target.value)} style={{width:"100%",padding:"4px 8px",border:"1px solid #eee",borderRadius:6,fontSize:11,cursor:"pointer"}}>
                     {WO_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
                   </select>
@@ -1515,6 +1521,7 @@ const WorkOrders = () => {
                 <div style={{fontSize:11,color:"#888",marginBottom:4}}>{w.description}</div>
                 <div style={{fontSize:11,color:"#aaa",marginBottom:4}}>👨‍🔧 {w.mechanic||"Unassigned"}</div>
                 <div style={{fontSize:11,fontWeight:600,color:"#27ae60",marginBottom:6}}>Labor: {jobLabor[w.id]||0}h · Parts: ${w.parts}</div>
+                {w.end_date&&<div style={{fontSize:11,fontWeight:700,color:"#1e8449",marginBottom:6}}>✅ Completed {fmtDay(w.end_date)}</div>}
                 <select value={w.status} onChange={e=>upd(w.id,e.target.value)} style={{width:"100%",padding:"4px 8px",border:"1px solid #eee",borderRadius:6,fontSize:11,cursor:"pointer"}}>
                   {WO_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
                 </select>
@@ -1613,6 +1620,10 @@ const WorkOrders = () => {
             <div style={{fontSize:10,fontWeight:800,letterSpacing:0.5,color:"#a07a14",textTransform:"uppercase",marginBottom:4}}>📋 Description / Customer complaint</div>
             {jobsModal.description}
           </div>}
+          <div style={{display:"flex",flexWrap:"wrap",gap:14,marginBottom:14,fontSize:12,color:"#666"}}>
+            <span>📅 Start: <strong style={{color:"#1a1a2e"}}>{jobsModal.date?fmtDay(jobsModal.date):"—"}</strong></span>
+            {jobsModal.end_date&&<span style={{color:"#1e8449",fontWeight:600}}>✅ Completed: {fmtDay(jobsModal.end_date)}</span>}
+          </div>
           <div style={{display:"flex",gap:8,borderBottom:"2px solid #f0f0f0",marginBottom:20,overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
             <button className={`tab-btn${jobTab==="jobs"?" active":""}`} onClick={()=>setJobTab("jobs")}>🔧 Jobs ({jobsList.length}) · {jobsList.reduce((s,j)=>s+Number(j.labor||0),0)}h</button>
             <button className={`tab-btn${jobTab==="parts"?" active":""}`} onClick={()=>setJobTab("parts")}>🔩 Parts ({partsList.length})</button>
@@ -2707,14 +2718,14 @@ const Reports = () => {
   const maxHours=Math.max(0,...report.map(r=>r.hours));
 
   const exportCSV=()=>{
-    const rows=[["Lincoln Truck & Trailer Repair — Labor Report"],["Timeframe",`${start} to ${end}`],[],["Mechanic","WO #","Date","Customer","Unit","Vehicle","Hours","Labor Rate","Labor $"]];
+    const rows=[["Lincoln Truck & Trailer Repair — Labor Report"],["Timeframe",`${start} to ${end}`],[],["Mechanic","WO #","Start Date","Customer","Unit","Vehicle","Hours","Labor Rate","Labor $"]];
     report.forEach(r=>{ r.wos.forEach(x=>rows.push([r.mech,x.wo.id,x.wo.date||"",x.wo.customer||"",x.wo.unit_number||"",x.wo.vehicle_type||"",h2(x.hours),Number(x.wo.labor)||0,Math.round(x.revenue)])); rows.push([`${r.mech} — TOTAL`,"","","","","",h2(r.hours),"",Math.round(r.revenue)]); rows.push([]); });
     rows.push(["GRAND TOTAL","","","","","",h2(grandHours),"",Math.round(grandRev)]);
     downloadFile(`labor-report_${start}_to_${end}.csv`, toCSV(rows), "text/csv;charset=utf-8");
   };
   const exportPDF=()=>{
     const win=window.open("","_blank"); if(!win){alert("Allow pop-ups for this site to export the PDF.");return;}
-    const sec=report.length?report.map(r=>`<h3>👨‍🔧 ${escHtml(r.mech)} — ${h2(r.hours)}h · ${money(r.revenue)}</h3><table><thead><tr><th>WO #</th><th>Date</th><th>Customer</th><th>Unit</th><th class=n>Hours</th><th class=n>Rate</th><th class=n>Labor $</th></tr></thead><tbody>${r.wos.map(x=>`<tr><td>${escHtml(x.wo.id)}</td><td>${x.wo.date?escHtml(fmtDay(x.wo.date)):""}</td><td>${escHtml(x.wo.customer||"")}</td><td>${escHtml(x.wo.unit_number||"")}</td><td class=n>${h2(x.hours)}</td><td class=n>$${Number(x.wo.labor)||0}</td><td class=n>${money(x.revenue)}</td></tr>`).join("")}<tr class=sub><td colspan=4>Subtotal</td><td class=n>${h2(r.hours)}</td><td></td><td class=n>${money(r.revenue)}</td></tr></tbody></table>`).join(""):"<p>No labor hours logged in this timeframe.</p>";
+    const sec=report.length?report.map(r=>`<h3>👨‍🔧 ${escHtml(r.mech)} — ${h2(r.hours)}h · ${money(r.revenue)}</h3><table><thead><tr><th>WO #</th><th>Start date</th><th>Customer</th><th>Unit</th><th class=n>Hours</th><th class=n>Rate</th><th class=n>Labor $</th></tr></thead><tbody>${r.wos.map(x=>`<tr><td>${escHtml(x.wo.id)}</td><td>${x.wo.date?escHtml(fmtDay(x.wo.date)):""}</td><td>${escHtml(x.wo.customer||"")}</td><td>${escHtml(x.wo.unit_number||"")}</td><td class=n>${h2(x.hours)}</td><td class=n>$${Number(x.wo.labor)||0}</td><td class=n>${money(x.revenue)}</td></tr>`).join("")}<tr class=sub><td colspan=4>Subtotal</td><td class=n>${h2(r.hours)}</td><td></td><td class=n>${money(r.revenue)}</td></tr></tbody></table>`).join(""):"<p>No labor hours logged in this timeframe.</p>";
     win.document.write(`<!doctype html><html><head><meta charset=utf-8><title>Labor Report</title><style>body{font-family:system-ui,Arial,sans-serif;color:#1a1a2e;padding:24px}h1{font-size:20px;margin:0 0 2px}.sub-h{color:#666;font-size:13px;margin:0 0 18px}h3{font-size:14px;margin:18px 0 6px}table{width:100%;border-collapse:collapse;margin-bottom:8px;font-size:12px}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left}th{background:#f4f6f9}td.n,th.n{text-align:right;white-space:nowrap}tr.sub td{font-weight:700;background:#fafafa}.grand{margin-top:14px;font-size:14px;font-weight:800;display:flex;justify-content:space-between;border-top:2px solid #1a1a2e;padding-top:8px}@media print{body{padding:0}}</style></head><body><h1>Lincoln Truck &amp; Trailer Repair — Labor Report</h1><div class=sub-h>Timeframe: ${escHtml(rangeLabel)} &nbsp;·&nbsp; Generated ${escHtml(fmtDay(todayLocal()))}</div>${sec}<div class=grand><span>Grand total</span><span>${h2(grandHours)}h · ${money(grandRev)}</span></div></body></html>`);
     win.document.close(); win.focus(); setTimeout(()=>{try{win.print();}catch(_){}},350);
   };
@@ -2769,7 +2780,7 @@ const Reports = () => {
                 </div>
                 <div style={{overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse",minWidth:520,fontSize:13}}>
-                    <thead><tr>{["WO #","Date","Customer","Unit","Hours","Labor $"].map((c,i)=><th key={c} style={{textAlign:i>=4?"right":"left",padding:"6px 8px",borderBottom:"2px solid #f0f0f0",color:"#888",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
+                    <thead><tr>{["WO #","Start date","Customer","Unit","Hours","Labor $"].map((c,i)=><th key={c} style={{textAlign:i>=4?"right":"left",padding:"6px 8px",borderBottom:"2px solid #f0f0f0",color:"#888",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
                     <tbody>{r.wos.map(x=>(
                       <tr key={x.wo.id}>
                         <td style={{padding:"6px 8px",borderBottom:"1px solid #f5f5f5",fontWeight:600,color:"#c0392b"}}>{x.wo.id}</td>
