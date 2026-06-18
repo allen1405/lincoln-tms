@@ -67,7 +67,7 @@ const sb = createClient('https://paytgvlfkqpyyxoqvaqn.supabase.co','sb_publishab
 const EQUIP_TYPES = ["Truck","Trailer","Camper","Van","Pickup","Other"];
 // Color per vehicle type for the at-a-glance badge in the WO title.
 const VTYPE_COLOR = {Truck:"#2980b9",Trailer:"#e67e22",Camper:"#d35400",Van:"#8e44ad",Pickup:"#16a085",Other:"#7f8c8d"};
-const WO_STATUSES = ["Waiting list","Check-in","Inspection","In progress","Waiting for parts","Done","Waiting on payment","Paid"];
+const WO_STATUSES = ["Waiting list","Check-in","In progress","Waiting for parts","Done","Waiting on payment","Paid"];
 const PART_STATUSES_ORDERED = ["Pending Order","Ordered","On Stock"]; // low → high; aggregate = lowest seen
 const aggregatePartsStatus = parts => {
   if (!parts || parts.length === 0) return null;
@@ -259,7 +259,7 @@ const DOT_ALL_ITEMS = DOT_SECTIONS.flatMap(s=>s.items.map(i=>({...i,section:s.nu
 const DOT_STATUSES = ["","OK","Needs repair","N/A"];
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-const SC = {"Waiting list":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"},"Check-in":{bg:"#eafaf1",c:"#27ae60",b:"#a9dfbf"},"Inspection":{bg:"#fef9e7",c:"#d4ac0d",b:"#f9e79f"},"In progress":{bg:"#f4ecf7",c:"#8e44ad",b:"#d7bde2"},"Waiting for parts":{bg:"#fef5e7",c:"#ca6f1e",b:"#fad7a0"},"Done":{bg:"#eafaf1",c:"#1e8449",b:"#a9dfbf"},"Waiting on payment":{bg:"#fff4e6",c:"#e67e22",b:"#fad7a0"},"Paid":{bg:"#e8f8f5",c:"#16a085",b:"#a3e4d7"},"Scheduled":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"}};
+const SC = {"Waiting list":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"},"Check-in":{bg:"#eafaf1",c:"#27ae60",b:"#a9dfbf"},"In progress":{bg:"#f4ecf7",c:"#8e44ad",b:"#d7bde2"},"Waiting for parts":{bg:"#fef5e7",c:"#ca6f1e",b:"#fad7a0"},"Done":{bg:"#eafaf1",c:"#1e8449",b:"#a9dfbf"},"Waiting on payment":{bg:"#fff4e6",c:"#e67e22",b:"#fad7a0"},"Paid":{bg:"#e8f8f5",c:"#16a085",b:"#a3e4d7"},"Scheduled":{bg:"#e8f4fd",c:"#2980b9",b:"#aed6f1"}};
 const Badge = ({s}) => { const x=SC[s]||{bg:"#f0f0f0",c:"#666",b:"#ddd"}; return <span style={{background:x.bg,color:x.c,border:`1px solid ${x.b}`,padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>{s}</span>; };
 const Loading = () => <div style={{padding:60,textAlign:"center",color:"#888",fontSize:14}}>⏳ Loading...</div>;
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
@@ -557,7 +557,7 @@ const Dashboard = ({onNav}) => {
         {l:"Overdue reminders",v:reminders.length,i:"⚠️",c:"#c0392b",page:"reminders"}
       ]
     : [
-        {l:"Active WOs",v:wos.filter(w=>w.status!=="Done").length,i:"🔧",c:"#3498db",page:"workorders"},
+        {l:"Active WOs",v:wos.filter(w=>["In progress","Check-in"].includes(w.status)).length,i:"🔧",c:"#3498db",page:"workorders"},
         {l:"In Progress",v:wos.filter(w=>w.status==="In progress").length,i:"⚙️",c:"#8e44ad",page:"workorders"},
         {l:"Customers",v:custs.length,i:"👥",c:"#27ae60",page:"customers"},
         // Revenue is admin-only (Reports is too) — omit the tile for everyone else.
@@ -2746,7 +2746,7 @@ const Invoices = () => {
 };
 const Estimates = () => {
   const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').in('status',['Waiting list','Inspection']).neq('is_voided',true),sb.from('jobs').select('work_order_id,labor')]).then(([w,j])=>{setWos(w.data||[]);setJobs(j.data||[]);setLoading(false);});},[]);
+  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').in('status',['Waiting list']).neq('is_voided',true),sb.from('jobs').select('work_order_id,labor')]).then(([w,j])=>{setWos(w.data||[]);setJobs(j.data||[]);setLoading(false);});},[]);
   if(loading) return <Loading/>;
   const hrs=woHoursMap(jobs);
   return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1></div>
