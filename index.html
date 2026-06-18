@@ -3046,7 +3046,28 @@ const App = () => {
     </ModeCtx.Provider></UserCtx.Provider>
   );
 };
-ReactDOM.render(<App/>, document.getElementById('root'));
+// Last line of defense: a render error anywhere in the tree shows a reload screen
+// instead of a blank white page (which is unrecoverable on a shop tablet).
+class ErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state={error:null}; }
+  static getDerivedStateFromError(error){ return {error}; }
+  componentDidCatch(error,info){ try{ console.error("App crashed:",error,info); }catch(_){} }
+  render(){
+    if(this.state.error){
+      return (
+        <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,textAlign:"center",background:"#f4f6f9",fontFamily:"system-ui,sans-serif"}}>
+          <div style={{fontSize:48,marginBottom:12}}>⚠️</div>
+          <h2 style={{margin:"0 0 8px",color:"#1a1a2e"}}>Something went wrong</h2>
+          <p style={{margin:"0 0 20px",color:"#666",maxWidth:420}}>The app hit an unexpected error. Reload to continue — your data is safe.</p>
+          <button onClick={()=>{try{location.reload();}catch(_){}}} style={{padding:"14px 28px",background:"#c0392b",color:"#fff",border:"none",borderRadius:10,fontSize:16,fontWeight:700,cursor:"pointer",minHeight:48}}>Reload</button>
+          <pre style={{marginTop:20,maxWidth:"90vw",overflow:"auto",fontSize:11,color:"#aaa",whiteSpace:"pre-wrap"}}>{String(this.state.error&&this.state.error.message||this.state.error)}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+ReactDOM.render(<ErrorBoundary><App/></ErrorBoundary>, document.getElementById('root'));
 </script>
 </body>
 </html>
