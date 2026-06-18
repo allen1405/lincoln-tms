@@ -2649,31 +2649,75 @@ const Salaries = () => {
 
 // ─── REPORTS / INVOICES / ESTIMATES ──────────────────────────────────────────
 // Local YYYY-MM-DD of the Monday that starts the current week.
-const weekStartLocal = () => { const d=new Date(); const off=(d.getDay()+6)%7; d.setDate(d.getDate()-off); return ymdLocal(d); };
+// ── Reports: date-range presets + export helpers ──────────────────────────────
+const escHtml = s => String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const csvCell = v => { const s=String(v??""); return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; };
+const toCSV = rows => rows.map(r=>r.map(csvCell).join(",")).join("\r\n");
+const downloadFile = (name,content,type) => { const blob=new Blob([content],{type}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>{try{URL.revokeObjectURL(url);}catch(_){}},1000); };
+const RANGE_OPTS = [["today","Today"],["yesterday","Yesterday"],["this-week","This week"],["last-week","Last week"],["this-month","This month"],["last-month","Last month"],["last-30","Last 30 days"],["this-quarter","This quarter"],["last-quarter","Last quarter"],["last-3-months","Last 3 months"],["last-6-months","Last 6 months"],["last-12-months","Last 12 months"],["ytd","Year to date"],["custom","Custom range…"]];
+// Inclusive {start,end} YYYY-MM-DD for a named range. Month/quarter math relies on JS Date normalization.
+const dateRangeFor = (key,custom) => {
+  const now=new Date(), Y=now.getFullYear(), M=now.getMonth(), D=now.getDate();
+  const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const mk=(y,m,d)=>new Date(y,m,d), today=mk(Y,M,D), dow=(today.getDay()+6)%7, q=Math.floor(M/3);
+  const fmt=(a,b)=>({start:ymd(a),end:ymd(b)});
+  switch(key){
+    case "today": return fmt(today,today);
+    case "yesterday": {const y=mk(Y,M,D-1);return fmt(y,y);}
+    case "this-week": return fmt(mk(Y,M,D-dow),today);
+    case "last-week": return fmt(mk(Y,M,D-dow-7),mk(Y,M,D-dow-1));
+    case "this-month": return fmt(mk(Y,M,1),today);
+    case "last-month": return fmt(mk(Y,M-1,1),mk(Y,M,0));
+    case "last-30": return fmt(mk(Y,M,D-29),today);
+    case "this-quarter": return fmt(mk(Y,q*3,1),today);
+    case "last-quarter": return fmt(mk(Y,(q-1)*3,1),mk(Y,q*3,0));
+    case "last-3-months": return fmt(mk(Y,M-3,D),today);
+    case "last-6-months": return fmt(mk(Y,M-6,D),today);
+    case "last-12-months": return fmt(mk(Y,M-12,D),today);
+    case "ytd": return fmt(mk(Y,0,1),today);
+    case "custom": return {start:(custom&&custom.start)||"",end:(custom&&custom.end)||""};
+    default: return fmt(mk(Y,M,1),today);
+  }
+};
 const Reports = () => {
   const user = useContext(UserCtx);
   const vp = useViewport();
   const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [loading,setLoading]=useState(true);
-  const [period,setPeriod]=useState("month"); // today | week | month | all — drives Hours by Mechanic
+  const [range,setRange]=useState("this-month");
+  const [custom,setCustom]=useState({start:todayLocal(),end:todayLocal()});
   useEffect(()=>{Promise.all([
     sb.from('work_orders').select('*').neq('is_voided',true),
     sb.from('jobs').select('work_order_id,mechanic,labor')
   ]).then(([w,j])=>{setWos(w.data||[]);setJobs(j.data||[]);setLoading(false);});},[]);
   if(user.role!=="admin") return <div style={{padding:40,textAlign:"center",color:"#888"}}>⛔ Admin access only.</div>;
   if(loading) return <Loading/>;
+  const h2=n=>Number(Number(n||0).toFixed(2)); const money=n=>"$"+Math.round(n||0).toLocaleString();
   const hrs=woHoursMap(jobs);
   const labor=wos.reduce((s,w)=>s+(Number(w.labor)||0)*(hrs[w.id]||0),0); const parts=wos.reduce((s,w)=>s+(Number(w.parts)||0),0);
-
-  // Hours by mechanic, bucketed by each job's WO service date.
   const woById=Object.fromEntries(wos.map(w=>[w.id,w]));
-  const today=todayLocal(), ws=weekStartLocal(), mo=today.slice(0,7);
-  const inPeriod=d=>!d?false:period==="all"?true:period==="today"?d===today:period==="week"?d>=ws:d.slice(0,7)===mo;
-  const mechHours={};
-  jobs.forEach(j=>{ const w=woById[j.work_order_id]; if(!w||!j.mechanic) return; if(!inPeriod(w.date)) return; mechHours[j.mechanic]=(mechHours[j.mechanic]||0)+Number(j.labor||0); });
-  const mechRows=Object.entries(mechHours).filter(([,h])=>h>0).sort((a,b)=>b[1]-a[1]);
-  const totalHours=mechRows.reduce((s,[,h])=>s+h,0);
-  const maxHours=mechRows[0]?.[1]||0; // rows are sorted desc, so the first is the largest — drives bar widths
-  const periods=[["today","Today"],["week","This week"],["month","This month"],["all","All time"]];
+
+  const {start,end}=dateRangeFor(range,custom);
+  const rangeLabel = start&&end ? `${fmtDay(start)} – ${fmtDay(end)}` : "Select dates";
+  const inRange=d=>!!(d&&start&&end&&d>=start&&d<=end);
+  // Per-mechanic → per-WO labor breakdown within the selected range.
+  const byMech={};
+  jobs.forEach(j=>{ const w=woById[j.work_order_id]; if(!w||!j.mechanic) return; if(!inRange(w.date)) return; const h=Number(j.labor||0); if(!h) return; const rate=Number(w.labor)||0; const m=byMech[j.mechanic]||(byMech[j.mechanic]={hours:0,revenue:0,wos:{}}); m.hours+=h; m.revenue+=rate*h; const we=m.wos[w.id]||(m.wos[w.id]={hours:0,revenue:0,wo:w}); we.hours+=h; we.revenue+=rate*h; });
+  const report=Object.entries(byMech).map(([mech,d])=>({mech,hours:d.hours,revenue:d.revenue,wos:Object.values(d.wos).sort((a,b)=>String(a.wo.date||"").localeCompare(String(b.wo.date||"")))})).sort((a,b)=>b.hours-a.hours);
+  const grandHours=report.reduce((s,r)=>s+r.hours,0), grandRev=report.reduce((s,r)=>s+r.revenue,0);
+  const maxHours=Math.max(0,...report.map(r=>r.hours));
+
+  const exportCSV=()=>{
+    const rows=[["Lincoln Truck & Trailer Repair — Labor Report"],["Timeframe",`${start} to ${end}`],[],["Mechanic","WO #","Date","Customer","Unit","Vehicle","Hours","Labor Rate","Labor $"]];
+    report.forEach(r=>{ r.wos.forEach(x=>rows.push([r.mech,x.wo.id,x.wo.date||"",x.wo.customer||"",x.wo.unit_number||"",x.wo.vehicle_type||"",h2(x.hours),Number(x.wo.labor)||0,Math.round(x.revenue)])); rows.push([`${r.mech} — TOTAL`,"","","","","",h2(r.hours),"",Math.round(r.revenue)]); rows.push([]); });
+    rows.push(["GRAND TOTAL","","","","","",h2(grandHours),"",Math.round(grandRev)]);
+    downloadFile(`labor-report_${start}_to_${end}.csv`, toCSV(rows), "text/csv;charset=utf-8");
+  };
+  const exportPDF=()=>{
+    const win=window.open("","_blank"); if(!win){alert("Allow pop-ups for this site to export the PDF.");return;}
+    const sec=report.length?report.map(r=>`<h3>👨‍🔧 ${escHtml(r.mech)} — ${h2(r.hours)}h · ${money(r.revenue)}</h3><table><thead><tr><th>WO #</th><th>Date</th><th>Customer</th><th>Unit</th><th class=n>Hours</th><th class=n>Rate</th><th class=n>Labor $</th></tr></thead><tbody>${r.wos.map(x=>`<tr><td>${escHtml(x.wo.id)}</td><td>${x.wo.date?escHtml(fmtDay(x.wo.date)):""}</td><td>${escHtml(x.wo.customer||"")}</td><td>${escHtml(x.wo.unit_number||"")}</td><td class=n>${h2(x.hours)}</td><td class=n>$${Number(x.wo.labor)||0}</td><td class=n>${money(x.revenue)}</td></tr>`).join("")}<tr class=sub><td colspan=4>Subtotal</td><td class=n>${h2(r.hours)}</td><td></td><td class=n>${money(r.revenue)}</td></tr></tbody></table>`).join(""):"<p>No labor hours logged in this timeframe.</p>";
+    win.document.write(`<!doctype html><html><head><meta charset=utf-8><title>Labor Report</title><style>body{font-family:system-ui,Arial,sans-serif;color:#1a1a2e;padding:24px}h1{font-size:20px;margin:0 0 2px}.sub-h{color:#666;font-size:13px;margin:0 0 18px}h3{font-size:14px;margin:18px 0 6px}table{width:100%;border-collapse:collapse;margin-bottom:8px;font-size:12px}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left}th{background:#f4f6f9}td.n,th.n{text-align:right;white-space:nowrap}tr.sub td{font-weight:700;background:#fafafa}.grand{margin-top:14px;font-size:14px;font-weight:800;display:flex;justify-content:space-between;border-top:2px solid #1a1a2e;padding-top:8px}@media print{body{padding:0}}</style></head><body><h1>Lincoln Truck &amp; Trailer Repair — Labor Report</h1><div class=sub-h>Timeframe: ${escHtml(rangeLabel)} &nbsp;·&nbsp; Generated ${escHtml(fmtDay(todayLocal()))}</div>${sec}<div class=grand><span>Grand total</span><span>${h2(grandHours)}h · ${money(grandRev)}</span></div></body></html>`);
+    win.document.close(); win.focus(); setTimeout(()=>{try{win.print();}catch(_){}},350);
+  };
 
   return (
     <div>
@@ -2696,27 +2740,52 @@ const Reports = () => {
         </div>
       </div>
       <div style={{background:"#fff",borderRadius:12,padding:24,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:16}}>
-          <h3 style={{margin:0,fontSize:16,fontWeight:700}}>Hours by Mechanic</h3>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {periods.map(([k,l])=>(
-              <button key={k} onClick={()=>setPeriod(k)} style={{padding:"7px 14px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:period===k?700:500,background:period===k?"#1a1a2e":"#f0f0f0",color:period===k?"#fff":"#555",minHeight:vp.isMobile?40:"auto"}}>{l}</button>
-            ))}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:6}}>
+          <h3 style={{margin:0,fontSize:16,fontWeight:700}}>Labor Report</h3>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+            <select value={range} onChange={e=>setRange(e.target.value)} style={{padding:"8px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:13,background:"#fff",minHeight:vp.isMobile?40:"auto"}}>
+              {RANGE_OPTS.map(([k,l])=><option key={k} value={k}>{l}</option>)}
+            </select>
+            {range==="custom"&&(<>
+              <input type="date" value={custom.start} onChange={e=>setCustom(c=>({...c,start:e.target.value}))} style={{padding:"7px 10px",border:"1px solid #ddd",borderRadius:8,fontSize:13}}/>
+              <span style={{color:"#888"}}>→</span>
+              <input type="date" value={custom.end} onChange={e=>setCustom(c=>({...c,end:e.target.value}))} style={{padding:"7px 10px",border:"1px solid #ddd",borderRadius:8,fontSize:13}}/>
+            </>)}
+            <button onClick={exportPDF} style={{padding:"8px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,minHeight:vp.isMobile?40:"auto"}}>📄 PDF</button>
+            <button onClick={exportCSV} style={{padding:"8px 14px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,minHeight:vp.isMobile?40:"auto"}}>📊 CSV</button>
           </div>
         </div>
-        {mechRows.length===0?<p style={{color:"#aaa",fontSize:13,textAlign:"center",padding:20}}>No hours logged in this period.</p>:(
+        <div style={{fontSize:12,color:"#888",marginBottom:16}}>{rangeLabel}{report.length?` · ${h2(grandHours)}h · ${money(grandRev)} labor`:""}</div>
+        {report.length===0?<p style={{color:"#aaa",fontSize:13,textAlign:"center",padding:20}}>No labor hours logged in this timeframe.</p>:(
           <div>
-            {mechRows.map(([m,h])=>(
-              <div key={m} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #f5f5f5"}}>
-                <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0}}>
-                  <span style={{fontSize:14,fontWeight:600,whiteSpace:"nowrap"}}>👨‍🔧 {m}</span>
-                  <div style={{flex:1,height:8,background:"#f0f0f0",borderRadius:4,overflow:"hidden",minWidth:40}}><div style={{width:`${maxHours?Math.round(h/maxHours*100):0}%`,height:"100%",background:"#3498db"}}/></div>
+            {report.map(r=>(
+              <div key={r.mech} style={{marginBottom:18}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0}}>
+                    <span style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap"}}>👨‍🔧 {r.mech}</span>
+                    <div style={{flex:1,height:8,background:"#f0f0f0",borderRadius:4,overflow:"hidden",minWidth:40}}><div style={{width:`${maxHours?Math.round(r.hours/maxHours*100):0}%`,height:"100%",background:"#3498db"}}/></div>
+                  </div>
+                  <span style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap"}}>{h2(r.hours)}h · {money(r.revenue)}</span>
                 </div>
-                <span style={{fontSize:14,fontWeight:700,marginLeft:12,whiteSpace:"nowrap"}}>{Number(h.toFixed(2))}h</span>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",minWidth:520,fontSize:13}}>
+                    <thead><tr>{["WO #","Date","Customer","Unit","Hours","Labor $"].map((c,i)=><th key={c} style={{textAlign:i>=4?"right":"left",padding:"6px 8px",borderBottom:"2px solid #f0f0f0",color:"#888",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
+                    <tbody>{r.wos.map(x=>(
+                      <tr key={x.wo.id}>
+                        <td style={{padding:"6px 8px",borderBottom:"1px solid #f5f5f5",fontWeight:600,color:"#c0392b"}}>{x.wo.id}</td>
+                        <td style={{padding:"6px 8px",borderBottom:"1px solid #f5f5f5",whiteSpace:"nowrap"}}>{x.wo.date?fmtDay(x.wo.date):"—"}</td>
+                        <td style={{padding:"6px 8px",borderBottom:"1px solid #f5f5f5"}}>{x.wo.customer||"—"}</td>
+                        <td style={{padding:"6px 8px",borderBottom:"1px solid #f5f5f5"}}>{x.wo.unit_number||"—"}</td>
+                        <td style={{padding:"6px 8px",borderBottom:"1px solid #f5f5f5",textAlign:"right",whiteSpace:"nowrap"}}>{h2(x.hours)}</td>
+                        <td style={{padding:"6px 8px",borderBottom:"1px solid #f5f5f5",textAlign:"right",whiteSpace:"nowrap",fontWeight:600,color:"#27ae60"}}>{money(x.revenue)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
               </div>
             ))}
-            <div style={{display:"flex",justifyContent:"space-between",paddingTop:12,fontSize:14,fontWeight:800}}>
-              <span>Total</span><span>{Number(totalHours.toFixed(2))}h</span>
+            <div style={{display:"flex",justifyContent:"space-between",borderTop:"2px solid #1a1a2e",paddingTop:10,fontSize:15,fontWeight:800}}>
+              <span>Grand total</span><span>{h2(grandHours)}h · {money(grandRev)}</span>
             </div>
           </div>
         )}
