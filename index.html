@@ -279,6 +279,19 @@ const bumpReminders = () => { try { window.dispatchEvent(new Event('reminders-ch
 // "Done" is this shop's terminal stage — it comes AFTER payment. A WO's end_date is captured
 // the moment it reaches Done (preserved on re-save) and cleared if it ever leaves Done.
 const nextEndDate = (status,current) => status==="Done" ? (current||todayLocal()) : null;
+// Fire-and-forget: cache a VIN's make/model/year (NHTSA, free, no key) so the Parts Reference
+// can group by truck type even when there's no equipment record. No-op if already cached.
+const decodeVinCached = async (vinRaw) => {
+  try {
+    const vin=(vinRaw||"").trim().toUpperCase();
+    if(vin.length<11) return;
+    const {data:existing}=await sb.from('vin_decode').select('vin').eq('vin',vin).maybeSingle();
+    if(existing) return;
+    const res=await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(vin)}?format=json`);
+    const r=((await res.json()).Results||[])[0]||{};
+    await sb.from('vin_decode').upsert({vin,make:(r.Make||"").trim(),model:(r.Model||"").trim(),year:(r.ModelYear||"").trim()},{onConflict:'vin'});
+  } catch(_) {}
+};
 // Auto-recurring reminders (auto_days): completing one schedules the next occurrence.
 const rescheduleAutoReminder = async (user, prev) => {
   if (!prev?.auto_days) return;
@@ -529,6 +542,7 @@ const NAV = [
   {id:"employees",label:"Employees",icon:"👤",s:"MENU"},
   {id:"salaries",label:"Salaries",icon:"💰",s:"MENU",admin:true},
   {id:"inventory",label:"Inventory",icon:"📦",s:"SUPPORT",shop:true},
+  {id:"partsref",label:"Parts Reference",icon:"📇",s:"SUPPORT",shop:true},
   {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT",admin:true},
   {id:"invoices",label:"Invoices",icon:"🧾",s:"SUPPORT"},
   {id:"estimates",label:"Estimates",icon:"📋",s:"SUPPORT"},
@@ -1007,6 +1021,7 @@ const WorkOrders = () => {
     const res=await sb.from('work_orders').insert([{...form,id,vehicle_type:form.vehicle_type||null,end_date:nextEndDate(form.status,null),labor:Number(form.labor),parts:Number(form.parts),truck_mileage:numOrNull(form.truck_mileage),apu_hours:numOrNull(form.apu_hours),apu_hours_since_oil:numOrNull(form.apu_hours_since_oil),reefer_hours:numOrNull(form.reefer_hours),reefer_hours_since_oil:numOrNull(form.reefer_hours_since_oil)}]).select().single();
     if(res.error){alert(res.error.code==="23505"?`Work order "${id}" already exists — choose a different number.`:"Could not create work order: "+res.error.message);return;}
     audit(user,"create","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
+    decodeVinCached(form.vin);
     closeWoModal();loadWos();
   };
   const openAdd=()=>{pickedEquip.current=false;setFormEquipItems(null);setForm({...empty,id:nextWoId()});setEditId(null);setModal(true);};
@@ -1037,6 +1052,7 @@ const WorkOrders = () => {
       if(bad)alert("WO renumbered, but some linked records could not be updated: "+bad.error.message);
     }
     audit(user,"update","work_order",id,`${id} — ${form.customer} (${form.unit_number})`,[renumbered&&`number: ${editId} → ${id}`,`status: ${form.status}`,form.is_road_call&&"road call"].filter(Boolean).join(", "));
+    decodeVinCached(form.vin);
     if(!combined){closeWoModal();loadWos();}
     else if(renumbered){closeCombined();} // editId/jobsModal.id now stale — reopen cleanly under the new number
     else {loadWos();setJobsModal(prev=>prev?{...prev,id,customer:form.customer,unit_number:form.unit_number,vin:form.vin,vehicle_type:form.vehicle_type||null,description:form.description,status:form.status,end_date:nextEndDate(form.status,form.end_date)}:prev);}
@@ -2885,6 +2901,64 @@ const Estimates = () => {
     </table></div></div>);
 };
 const Inventory = () => (<div><h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Inventory</h1><div style={{background:"#fff",borderRadius:12,padding:60,textAlign:"center",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><div style={{fontSize:48,marginBottom:16}}>🔧</div><h3 style={{margin:"0 0 8px"}}>Coming Soon</h3><p style={{color:"#888"}}>Parts catalog, stock levels, reorder alerts.</p></div></div>);
+// ─── PARTS REFERENCE ──────────────────────────────────────────────────────────
+// Live cross-reference: every part name/number ever logged on a WO, grouped by the truck's
+// make/model/year (from the equipment record, else decoded from the VIN) so mechanics can look
+// up "what part numbers did we use on this kind of truck before." Reads the parts_catalog view.
+const PartsReference = () => {
+  const vp = useViewport();
+  const [rows,setRows]=useState([]); const [loading,setLoading]=useState(true); const [q,setQ]=useState("");
+  useEffect(()=>{sb.from('parts_catalog').select('*').then(({data})=>{setRows(data||[]);setLoading(false);});},[]);
+  if(loading) return <Loading/>;
+  const ql=q.trim().toLowerCase();
+  const hit=r=>!ql||[r.make,r.model,r.year,r.vin,r.unit_number,r.part_name,r.part_number,r.customer].some(v=>String(v||"").toLowerCase().includes(ql));
+  const filtered=rows.filter(hit);
+  // Group by truck type (year make model); rows with no make fall into a "by VIN/unit" bucket.
+  const groups={};
+  filtered.forEach(r=>{
+    const truck=(r.make||"")?`${r.year||""} ${r.make||""} ${r.model||""}`.replace(/\s+/g," ").trim():(r.vin?`VIN ${r.vin}`:(r.unit_number?`Unit ${r.unit_number}`:"Unidentified truck"));
+    const g=groups[truck]||(groups[truck]={truck,hasMake:!!r.make,parts:{}});
+    const key=`${(r.part_name||"").toLowerCase()}|${(r.part_number||"").toLowerCase()}`;
+    const p=g.parts[key]||(g.parts[key]={name:r.part_name||"—",number:r.part_number||"",count:0,last:"",lastWo:"",units:new Set()});
+    p.count++; if(r.unit_number)p.units.add(r.unit_number);
+    if(String(r.wo_date||"")>String(p.last)){p.last=r.wo_date||"";p.lastWo=r.work_order_id||"";}
+  });
+  const list=Object.values(groups).map(g=>({...g,parts:Object.values(g.parts).sort((a,b)=>a.name.localeCompare(b.name))}))
+    .sort((a,b)=>(b.hasMake-a.hasMake)||a.truck.localeCompare(b.truck));
+  return (
+    <div>
+      <div style={{marginBottom:6}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Parts Reference</h1></div>
+      <p style={{margin:"0 0 16px",color:"#888",fontSize:13}}>Part numbers used before, grouped by truck make/model/year. Search a truck or part to reuse the right number.</p>
+      <div style={{position:"relative",marginBottom:18,maxWidth:460}}>
+        <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"#aaa"}}>🔍</span>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search make, model, year, VIN, part name or number…" style={{width:"100%",padding:"11px 12px 11px 36px",border:"1px solid #ddd",borderRadius:10,fontSize:14}}/>
+      </div>
+      {list.length===0?<div style={{padding:30,textAlign:"center",color:"#aaa",background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>No parts found.</div>:list.map(g=>(
+        <div key={g.truck} style={{background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:16,overflow:"hidden"}}>
+          <div style={{padding:"12px 16px",borderBottom:"1px solid #f0f0f0",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontWeight:800,fontSize:15,color:"#1a1a2e"}}>🚛 {g.truck}</span>
+            <span style={{fontSize:12,color:"#888"}}>{g.parts.length} part{g.parts.length>1?"s":""}</span>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:560,fontSize:13}}>
+              <thead><tr>{["Part","Part #","Units","Times","Last used","Last WO"].map((c,i)=><th key={c} style={{textAlign:i>=2&&i<=3?"right":"left",padding:"8px 14px",fontSize:11,fontWeight:700,color:"#888",letterSpacing:0.5,textTransform:"uppercase",borderBottom:"2px solid #f5f5f5",whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
+              <tbody>{g.parts.map((p,i)=>(
+                <tr key={p.name+p.number+i} style={{background:i%2?"#fafafa":"#fff"}}>
+                  <td style={{padding:"8px 14px",borderBottom:"1px solid #f5f5f5"}}>{p.name}</td>
+                  <td style={{padding:"8px 14px",borderBottom:"1px solid #f5f5f5",fontFamily:"monospace",fontWeight:700,color:p.number?"#c0392b":"#bbb"}}>{p.number||"— none —"}</td>
+                  <td style={{padding:"8px 14px",borderBottom:"1px solid #f5f5f5",textAlign:"right",color:"#666",whiteSpace:"nowrap"}}>{[...p.units].join(", ")||"—"}</td>
+                  <td style={{padding:"8px 14px",borderBottom:"1px solid #f5f5f5",textAlign:"right",color:"#666"}}>{p.count}</td>
+                  <td style={{padding:"8px 14px",borderBottom:"1px solid #f5f5f5",whiteSpace:"nowrap",color:"#666"}}>{p.last?fmtDay(p.last):"—"}</td>
+                  <td style={{padding:"8px 14px",borderBottom:"1px solid #f5f5f5",fontWeight:600,color:"#1a1a2e",whiteSpace:"nowrap"}}>{p.lastWo||"—"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 // ─── AUDIT LOG ────────────────────────────────────────────────────────────────
 const AuditLog = () => {
@@ -3137,7 +3211,7 @@ const App = () => {
   const pages = {
     dashboard:<Dashboard onNav={setPage}/>,workorders:<WorkOrders/>,customers:<Customers/>,
     appointments:<Appointments/>,reminders:<RemindersPage/>,employees:<EmployeesPage/>,
-    salaries:<Salaries/>,inventory:<Inventory/>,reports:<Reports/>,
+    salaries:<Salaries/>,inventory:<Inventory/>,partsref:<PartsReference/>,reports:<Reports/>,
     invoices:<Invoices/>,estimates:<Estimates/>,auditlog:<AuditLog/>,settings:<Settings/>,
   };
   const canToggleMode = isMech && !vp.isDesktop;
