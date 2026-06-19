@@ -1452,8 +1452,7 @@ const WorkOrders = () => {
             const w=wos.find(x=>x.id===editId);
             if(!w) return null;
             if(w.is_voided) return <button onClick={()=>restoreWo(editId,isCombined?"combined":"standalone")} style={{padding:"10px 18px",background:"#27ae60",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600}}>↺ Restore from voided</button>;
-            if(!["Done","Paid"].includes(w.status)) return <button onClick={()=>voidWo(editId,isCombined?"combined":"standalone")} style={{padding:"10px 18px",background:"#fff",color:"#c0392b",border:"1px solid #c0392b",borderRadius:8,cursor:"pointer",fontWeight:600}}>🚫 Void WO</button>;
-            return null;
+            return <button onClick={()=>voidWo(editId,isCombined?"combined":"standalone")} style={{padding:"10px 18px",background:"#fff",color:"#c0392b",border:"1px solid #c0392b",borderRadius:8,cursor:"pointer",fontWeight:600}}>🚫 Void WO</button>;
           })()}
         </div>
         <div style={{display:"flex",gap:10}}>
