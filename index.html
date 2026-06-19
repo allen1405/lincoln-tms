@@ -543,6 +543,7 @@ const NAV = [
   {id:"salaries",label:"Salaries",icon:"💰",s:"MENU",admin:true},
   {id:"inventory",label:"Inventory",icon:"📦",s:"SUPPORT",shop:true},
   {id:"partsref",label:"Parts Reference",icon:"📇",s:"SUPPORT",shop:true},
+  {id:"mysig",label:"My Signature",icon:"✍️",s:"SUPPORT",shop:true},
   {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT",admin:true},
   {id:"invoices",label:"Invoices",icon:"🧾",s:"SUPPORT"},
   {id:"estimates",label:"Estimates",icon:"📋",s:"SUPPORT"},
@@ -1198,11 +1199,16 @@ const WorkOrders = () => {
     audit(user,"update","dot_inspection",jobsModal.id,`${jobsModal.id} — ${dot.carrier_operator}`,`result: ${dot.overall_result||"—"}`);
     alert("DOT inspection saved.");
   };
-  const printDot=()=>{
+  const printDot=async()=>{
+    // Open the print window synchronously (before any await) so pop-up blockers don't trip.
+    const w=window.open("","_blank");
+    if(!w){alert("Pop-up blocked — allow pop-ups to print.");return;}
     const esc=s=>String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     const idCheck=v=>v&&String(v).trim()?"☑":"☐";
     // Report number falls back to the WO id if the shop doesn't use a separate report number.
     const reportNo=(dot.report_number||"").trim()||jobsModal.id;
+    // The signing mechanic's saved signature (fetched fresh — it's not kept in the session).
+    let sigImg=""; try{ const {data}=await sb.from('users').select('signature').eq('id',user.id).maybeSingle(); sigImg=(data&&data.signature)||""; }catch(_){}
     const renderSection=sec=>`<div class="sec"><div class="sec-hd">${sec.num}. ${esc(sec.title.toUpperCase())}</div><table class="comp"><tbody>${sec.items.map((it,i)=>{const cv=dot.components[it.key]||{};const ok=cv.status==="OK"?"✓":cv.status==="N/A"?"NA":"";const nr=cv.status==="Needs repair"?"✗":"";const rd=cv.repaired_date||"";const letter=sec.items.length>1?String.fromCharCode(97+i)+". ":"";return `<tr><td class="m ok">${ok}</td><td class="m nr">${nr}</td><td class="rd">${esc(rd)}</td><td class="lbl-item">${esc(letter)}${esc(it.label)}</td></tr>`;}).join("")}</tbody></table></div>`;
     // 4-column distribution mirrors Loves/TA forms — fits on one US Letter page reliably.
     const cols=[[],[],[],[]];
@@ -1257,6 +1263,9 @@ const WorkOrders = () => {
       .result-line{font-size:10px;margin-bottom:3px}
       .cert{font-weight:bold;font-size:8.5px;border-top:1px solid #000;padding-top:3px}
       .sig{flex:0 0 auto;display:flex;gap:14px}
+      .sig .sigcell{flex:0 0 auto;text-align:center}
+      .sig .sigcontent{height:34px;display:flex;align-items:flex-end;justify-content:center;font-size:11px}
+      .sig .sigimg{max-height:34px;max-width:140px}
       .sig .line{border-top:1px solid #000;width:140px;padding-top:2px;font-size:8px;text-align:center}
       @media print{body{margin:0}}
     </style></head><body>
@@ -1300,11 +1309,12 @@ const WorkOrders = () => {
           <div class="result-line"><b>Overall Result:</b> ${esc(dot.overall_result||"—")}</div>
           <div class="cert">CERTIFICATION: THIS VEHICLE HAS PASSED ALL THE INSPECTION ITEMS FOR THE ANNUAL VEHICLE INSPECTION IN ACCORDANCE WITH 49 CFR PART 396.</div>
         </div>
-        <div class="sig"><div class="line">Inspector signature</div><div class="line">Date</div></div>
+        <div class="sig">
+          <div class="sigcell"><div class="sigcontent">${sigImg?`<img class="sigimg" src="${sigImg}"/>`:""}</div><div class="line">Inspector signature</div></div>
+          <div class="sigcell"><div class="sigcontent">${esc(fmtDay(dot.inspection_date||todayLocal()))}</div><div class="line">Date</div></div>
+        </div>
       </div>
     </body></html>`;
-    const w=window.open("","_blank");
-    if(!w){alert("Pop-up blocked — allow pop-ups to print.");return;}
     w.document.write(html);w.document.close();w.focus();setTimeout(()=>w.print(),250);
   };
   const addJob=async(name)=>{
@@ -3161,6 +3171,59 @@ const saveSession = (u) => {
   } catch {}
 };
 
+// ─── SIGNATURE PAD + MY SIGNATURE PAGE ────────────────────────────────────────
+// Draw-once signature, saved to the user's profile (users.signature, a PNG data URL),
+// stamped onto DOT printouts by printDot.
+const SignaturePad = ({onSave}) => {
+  const ref=React.useRef(null); const drawing=React.useRef(false); const last=React.useRef(null);
+  const [dirty,setDirty]=useState(false);
+  const ctx=()=>ref.current.getContext("2d");
+  const pos=e=>{ const c=ref.current,r=c.getBoundingClientRect(); return {x:(e.clientX-r.left)*(c.width/r.width), y:(e.clientY-r.top)*(c.height/r.height)}; };
+  const down=e=>{ e.preventDefault(); try{ref.current.setPointerCapture(e.pointerId);}catch(_){} drawing.current=true; last.current=pos(e); };
+  const move=e=>{ if(!drawing.current)return; e.preventDefault(); const p=pos(e),g=ctx(); g.strokeStyle="#1a1a2e";g.lineWidth=2.5;g.lineCap="round";g.lineJoin="round"; g.beginPath();g.moveTo(last.current.x,last.current.y);g.lineTo(p.x,p.y);g.stroke(); last.current=p; if(!dirty)setDirty(true); };
+  const up=()=>{ drawing.current=false; };
+  const clear=()=>{ const c=ref.current; ctx().clearRect(0,0,c.width,c.height); setDirty(false); };
+  const save=()=>{ if(!dirty){alert("Draw your signature first.");return;} onSave(ref.current.toDataURL("image/png")); };
+  return (
+    <div>
+      <canvas ref={ref} width={500} height={180} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerLeave={up}
+        style={{width:"100%",maxWidth:500,height:180,border:"1px dashed #c0392b",borderRadius:10,background:"#fff",touchAction:"none",cursor:"crosshair",display:"block"}}/>
+      <div style={{display:"flex",gap:8,marginTop:10}}>
+        <button onClick={clear} style={{padding:"10px 18px",background:"#f0f0f0",border:"none",borderRadius:8,cursor:"pointer",fontSize:14}}>Clear</button>
+        <button onClick={save} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:14}}>💾 Save signature</button>
+      </div>
+    </div>
+  );
+};
+const MySignature = () => {
+  const user=useContext(UserCtx);
+  const [sig,setSig]=useState(""); const [loading,setLoading]=useState(true); const [saved,setSaved]=useState(false);
+  useEffect(()=>{ sb.from('users').select('signature').eq('id',user.id).maybeSingle().then(({data})=>{ setSig((data&&data.signature)||""); setLoading(false); }); },[]);
+  const onSave=async(dataUrl)=>{
+    const r=await must(sb.from('users').update({signature:dataUrl}).eq('id',user.id),"Could not save signature");
+    if(!r)return;
+    setSig(dataUrl); setSaved(true); setTimeout(()=>setSaved(false),2500);
+  };
+  const remove=async()=>{ if(!confirm("Remove your saved signature?"))return; const r=await must(sb.from('users').update({signature:null}).eq('id',user.id),"Could not remove signature"); if(!r)return; setSig(""); };
+  if(loading) return <Loading/>;
+  return (
+    <div>
+      <h1 style={{margin:"0 0 6px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>My Signature</h1>
+      <p style={{margin:"0 0 18px",color:"#888",fontSize:13}}>Sign once here and it auto-applies to the bottom of any DOT inspection form <strong>you</strong> print.</p>
+      <div style={{background:"#fff",borderRadius:12,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",maxWidth:560}}>
+        {sig&&<div style={{marginBottom:18}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:6}}>Current signature</div>
+          <img src={sig} alt="signature" style={{maxWidth:300,maxHeight:90,border:"1px solid #eee",borderRadius:8,background:"#fff",padding:6}}/>
+          <div><button onClick={remove} style={{marginTop:8,padding:"6px 12px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>Remove</button></div>
+        </div>}
+        <div style={{fontSize:13,fontWeight:600,color:"#555",marginBottom:8}}>{sig?"Draw a new signature to replace it:":"Draw your signature:"}</div>
+        <SignaturePad onSave={onSave}/>
+        {saved&&<div style={{marginTop:12,color:"#1e8449",fontWeight:700,fontSize:14}}>✓ Signature saved</div>}
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   const [user,setUserState]=useState(loadSession);
   const setUser = u => { saveSession(u); setUserState(u); };
@@ -3210,7 +3273,7 @@ const App = () => {
   const pages = {
     dashboard:<Dashboard onNav={setPage}/>,workorders:<WorkOrders/>,customers:<Customers/>,
     appointments:<Appointments/>,reminders:<RemindersPage/>,employees:<EmployeesPage/>,
-    salaries:<Salaries/>,inventory:<Inventory/>,partsref:<PartsReference/>,reports:<Reports/>,
+    salaries:<Salaries/>,inventory:<Inventory/>,partsref:<PartsReference/>,mysig:<MySignature/>,reports:<Reports/>,
     invoices:<Invoices/>,estimates:<Estimates/>,auditlog:<AuditLog/>,settings:<Settings/>,
   };
   const canToggleMode = isMech && !vp.isDesktop;
