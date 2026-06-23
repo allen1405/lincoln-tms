@@ -929,6 +929,7 @@ const WorkOrders = () => {
   const [partsList,setPartsList]=useState([]);
   const [addingPart,setAddingPart]=useState(false);
   const [editPartId,setEditPartId]=useState(null);
+  const partFormRef=React.useRef(null); // scroll the part add/edit form into view when it opens (it renders at the top of the tab)
   const PART_EMPTY={name:"",description:"",part_number:"",quantity:1,status:"Pending Order",eta_delivery:""};
   const [partForm,setPartForm]=useState(PART_EMPTY);
   const [shopSupply,setShopSupply]=useState("");
@@ -1362,6 +1363,7 @@ const WorkOrders = () => {
   const openAddPart=()=>{setPartForm(PART_EMPTY);setEditPartId(null);setAddingPart(true);};
   const openEditPart=(p)=>{setPartForm({name:p.name||"",description:p.description||"",part_number:p.part_number||"",quantity:p.quantity??1,status:p.status||"Pending Order",eta_delivery:p.eta_delivery||""});setEditPartId(p.id);setAddingPart(true);};
   const closePartForm=()=>{setAddingPart(false);setEditPartId(null);setPartForm(PART_EMPTY);};
+  useEffect(()=>{ if(addingPart&&partFormRef.current) partFormRef.current.scrollIntoView({behavior:"smooth",block:"center"}); },[addingPart,editPartId]);
   const savePart=async()=>{
     if(!partForm.name.trim()) return;
     const payload={name:partForm.name.trim(),description:partForm.description,part_number:partForm.part_number,quantity:Number(partForm.quantity),status:partForm.status,eta_delivery:partForm.eta_delivery||null};
@@ -1820,7 +1822,7 @@ const WorkOrders = () => {
             <div>
               {!addingPart&&<button onClick={openAddPart} style={{marginBottom:16,padding:"9px 16px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>+ Add Part</button>}
               {addingPart&&(
-                <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:16}}>
+                <div ref={partFormRef} style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:16,border:editPartId?"2px solid #c0392b":"1px solid #eee"}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#555",marginBottom:10}}>{editPartId?"Edit part":"Add part"}</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                     <Field label="Part Name" value={partForm.name} onChange={v=>setPartForm(p=>({...p,name:v}))} required placeholder="e.g. Brake Pads"/>
@@ -1852,8 +1854,8 @@ const WorkOrders = () => {
                       </div>
                       <div style={{display:"flex",gap:6,alignItems:"center"}}>
                         <span style={{background:s.bg,color:s.c,border:`1px solid ${s.b}`,padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>{p.status}</span>
-                        <button onClick={()=>openEditPart(p)} title="Edit part" style={{padding:"4px 9px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:11}}>✏️</button>
-                        <button onClick={()=>delPart(p.id)} title="Delete part" style={{padding:"4px 9px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,cursor:"pointer",fontSize:11}}>🗑</button>
+                        <button onClick={()=>openEditPart(p)} title="Edit part" style={{padding:"8px 12px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:14,minWidth:40,minHeight:36}}>✏️</button>
+                        <button onClick={()=>delPart(p.id)} title="Delete part" style={{padding:"8px 12px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,cursor:"pointer",fontSize:14,minWidth:40,minHeight:36}}>🗑</button>
                       </div>
                     </div>
                     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
