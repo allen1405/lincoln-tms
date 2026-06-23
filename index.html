@@ -278,7 +278,9 @@ const woRevenue = (w,hours) => (Number(w.labor)||0)*(hours||0) + (Number(w.parts
 const bumpReminders = () => { try { window.dispatchEvent(new Event('reminders-changed')); } catch(_) {} };
 // "Done" is this shop's terminal stage — it comes AFTER payment. A WO's end_date is captured
 // the moment it reaches Done (preserved on re-save) and cleared if it ever leaves Done.
-const nextEndDate = (status,current) => status==="Done" ? (current||todayLocal()) : null;
+// Finished date is stamped the first time a WO reaches Done and then PERSISTS — it stays
+// visible even after the WO moves on (e.g. to Paid) and is never auto-cleared.
+const nextEndDate = (status,current) => current || (status==="Done" ? todayLocal() : null);
 // Fire-and-forget: cache a VIN's make/model/year (NHTSA, free, no key) so the Parts Reference
 // can group by truck type even when there's no equipment record. No-op if already cached.
 const decodeVinCached = async (vinRaw) => {
@@ -656,8 +658,12 @@ const Dashboard = ({onNav}) => {
             <button onClick={()=>onNav("workorders")} style={linkStyle}>View all →</button>
           </div>
           {wos.slice(0,5).map(w=>(
-            <div key={w.id} onClick={()=>onNav("workorders")} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:"1px solid #f5f5f5",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#fafafa"} onMouseLeave={e=>e.currentTarget.style.background=""}>
-              <div><div style={{fontWeight:600,fontSize:13}}>{w.id} — {w.unit_number}</div><div style={{fontSize:12,color:"#888"}}>{w.customer}</div></div>
+            <div key={w.id} onClick={()=>onNav("workorders")} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,padding:"9px 0",borderBottom:"1px solid #f5f5f5",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#fafafa"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+              <div style={{minWidth:0}}>
+                <div style={{fontWeight:600,fontSize:13}}>{w.id} — {w.unit_number}</div>
+                <div style={{fontSize:12,color:"#888"}}>{w.customer}</div>
+                <div style={{fontSize:11,color:"#aaa",marginTop:2}}>🟢 Started {w.date?fmtDay(w.date):"—"}{w.end_date?` · 🏁 Finished ${fmtDay(w.end_date)}`:""}</div>
+              </div>
               <Badge s={w.status}/>
             </div>
           ))}
