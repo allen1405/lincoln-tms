@@ -1364,9 +1364,18 @@ const WorkOrders = () => {
   const openEditPart=(p)=>{setPartForm({name:p.name||"",description:p.description||"",part_number:p.part_number||"",quantity:p.quantity??1,status:p.status||"Pending Order",eta_delivery:p.eta_delivery||""});setEditPartId(p.id);setAddingPart(true);};
   const closePartForm=()=>{setAddingPart(false);setEditPartId(null);setPartForm(PART_EMPTY);};
   useEffect(()=>{ if(addingPart&&partFormRef.current) partFormRef.current.scrollIntoView({behavior:"smooth",block:"center"}); },[addingPart,editPartId]);
+  // Feed a "Pending Order" WO part into the shop's Order Parts queue (one row per source part).
+  const syncOrderPart=async(srcId,p,woId)=>{
+    try{
+      const {data:ex}=await sb.from('order_parts').select('id').eq('source_part_id',srcId).maybeSingle();
+      if(ex) await sb.from('order_parts').update({name:p.name,part_number:p.part_number||null,quantity:Number(p.quantity)||1}).eq('id',ex.id);
+      else await sb.from('order_parts').insert([{name:p.name,part_number:p.part_number||null,quantity:Number(p.quantity)||1,work_order_id:woId,source_part_id:srcId,status:'Pending',urgency:'Medium',created_by:user.name}]);
+    }catch(_){}
+  };
   const savePart=async()=>{
     if(!partForm.name.trim()) return;
     const payload={name:partForm.name.trim(),description:partForm.description,part_number:partForm.part_number,quantity:Number(partForm.quantity),status:partForm.status,eta_delivery:partForm.eta_delivery||null};
+    let srcId=editPartId;
     if(editPartId){
       const res=await sb.from('parts').update(payload).eq('id',editPartId);
       if(res.error){alert("Could not save: "+res.error.message);return;}
@@ -1374,8 +1383,10 @@ const WorkOrders = () => {
     }else{
       const {data:inserted,error}=await sb.from('parts').insert([{...payload,work_order_id:jobsModal.id,created_by:user.name}]).select().single();
       if(error){alert("Could not save: "+error.message);return;}
+      srcId=inserted?.id;
       audit(user,"create","part",inserted?.id,`${jobsModal.id} — ${payload.name}`,`qty: ${payload.quantity}, status: ${payload.status}`);
     }
+    if(payload.status==="Pending Order"&&srcId) await syncOrderPart(srcId,payload,jobsModal.id);
     closePartForm(); loadParts(jobsModal.id);
   };
   const updPart=async(id,field,val)=>{
@@ -1383,6 +1394,7 @@ const WorkOrders = () => {
     const r=await must(sb.from('parts').update({[field]:val}).eq('id',id),"Could not update part");
     if(!r){loadParts(jobsModal.id);return;}
     audit(user,"update","part",id,`${jobsModal.id} — ${prev?.name||""}`,`${field}: "${prev?.[field]??""}" → "${val??""}"`);
+    if(field==="status"&&val==="Pending Order") syncOrderPart(id,{name:prev?.name,part_number:prev?.part_number,quantity:prev?.quantity},jobsModal.id);
     loadParts(jobsModal.id);
   };
   const delPart=async(id)=>{
@@ -2925,48 +2937,106 @@ const OrderParts = () => {
   const user = useContext(UserCtx);
   const vp = useViewport();
   const guard = useOnce();
-  const EMPTY={name:"",part_number:"",quantity:"1",vendor:""};
+  const EMPTY={name:"",part_number:"",quantity:"1",urgency:"Medium",vendor_primary:"",vendor_secondary:""};
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true); const [form,setForm]=useState(EMPTY);
-  const load=async()=>{ const {data}=await sb.from('order_parts').select('*').order('ordered',{ascending:true}).order('created_at',{ascending:false}); setList(data||[]); setLoading(false); };
+  const [q,setQ]=useState(""); const [histOpen,setHistOpen]=useState(false);
+  const load=async()=>{ const {data}=await sb.from('order_parts').select('*').order('created_at',{ascending:false}); setList(data||[]); setLoading(false); };
   useEffect(()=>{load();},[]);
   const add=async()=>{
     if(!form.name.trim()){alert("Enter a part name.");return;}
-    const r=await must(sb.from('order_parts').insert([{name:form.name.trim(),part_number:form.part_number.trim()||null,quantity:Number(form.quantity)||1,vendor:form.vendor.trim()||null,ordered:false,created_by:user.name}]),"Could not add part");
+    const r=await must(sb.from('order_parts').insert([{name:form.name.trim(),part_number:form.part_number.trim()||null,quantity:Number(form.quantity)||1,urgency:form.urgency,vendor_primary:form.vendor_primary.trim()||null,vendor_secondary:form.vendor_secondary.trim()||null,status:'Pending',created_by:user.name}]),"Could not add part");
     if(!r)return; setForm(EMPTY); load();
   };
-  const toggle=async(p)=>{ const r=await must(sb.from('order_parts').update({ordered:!p.ordered}).eq('id',p.id),"Could not update"); if(!r)return; load(); };
-  const del=async(p)=>{ if(!confirm(`Remove "${p.name}" from the order list?`))return; const r=await must(sb.from('order_parts').delete().eq('id',p.id),"Could not delete"); if(!r)return; load(); };
+  const upd=async(p,patch)=>{ const r=await must(sb.from('order_parts').update(patch).eq('id',p.id),"Could not update"); if(!r)return; load(); };
+  const markOrdered=async(p)=>{
+    const r=await must(sb.from('order_parts').update({status:'Ordered',ordered_at:todayLocal(),ordered_from:p.ordered_from||p.vendor_primary||null}).eq('id',p.id),"Could not update"); if(!r)return;
+    if(p.source_part_id){ try{ await sb.from('parts').update({status:'Ordered'}).eq('id',p.source_part_id); }catch(_){} } // sync back to the WO part
+    load();
+  };
+  const unorder=async(p)=>{ const r=await must(sb.from('order_parts').update({status:'Pending',ordered_at:null}).eq('id',p.id),"Could not update"); if(!r)return; load(); };
+  const del=async(p)=>{ if(!confirm(`Remove "${p.name}"?`))return; const r=await must(sb.from('order_parts').delete().eq('id',p.id),"Could not delete"); if(!r)return; load(); };
   if(loading) return <Loading/>;
-  const inp={padding:"10px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,width:"100%"};
-  const openCount=list.filter(p=>!p.ordered).length;
+  const ql=q.trim().toLowerCase();
+  const match=p=>!ql||[p.name,p.part_number,p.vendor_primary,p.vendor_secondary,p.ordered_from,p.urgency,p.work_order_id].some(v=>String(v||"").toLowerCase().includes(ql));
+  const URG={High:{bg:"#fdecea",c:"#c0392b"},Medium:{bg:"#fef5e7",c:"#ca6f1e"},Low:{bg:"#eafaf1",c:"#27ae60"}};
+  const rank={High:0,Medium:1,Low:2};
+  const pending=list.filter(p=>p.status!=="Ordered"&&match(p)).sort((a,b)=>(rank[a.urgency]??1)-(rank[b.urgency]??1));
+  const ordered=list.filter(p=>p.status==="Ordered"&&match(p)).sort((a,b)=>String(b.ordered_at||"").localeCompare(String(a.ordered_at||"")));
+  const partNums=[...new Set(list.map(p=>p.part_number).filter(Boolean))].sort();
+  const vendors=[...new Set(list.flatMap(p=>[p.vendor_primary,p.vendor_secondary,p.ordered_from]).filter(Boolean))].sort();
+  const inp={padding:"9px 11px",border:"1px solid #ddd",borderRadius:8,fontSize:14,width:"100%"};
+  const ci={padding:"5px 7px",border:"1px solid #eee",borderRadius:6,fontSize:12,width:"100%",minWidth:84,background:"#fff"};
+  const th=c=><th style={{textAlign:"left",padding:"9px 12px",fontSize:10,fontWeight:700,color:"#888",letterSpacing:0.5,textTransform:"uppercase",borderBottom:"2px solid #f0f0f0",whiteSpace:"nowrap"}}>{c}</th>;
+  const td={padding:"8px 12px",borderBottom:"1px solid #f5f5f5",fontSize:13,verticalAlign:"top"};
+  const lbl={fontSize:12,fontWeight:600,color:"#555",display:"block",marginBottom:3};
   return (
     <div>
+      <datalist id="op-partnums">{partNums.map(o=><option key={o} value={o}/>)}</datalist>
+      <datalist id="op-vendors">{vendors.map(o=><option key={o} value={o}/>)}</datalist>
       <h1 style={{margin:"0 0 6px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Order Parts</h1>
-      <p style={{margin:"0 0 18px",color:"#888",fontSize:13}}>Parts the shop needs to order. {openCount} still to order.</p>
-      <div style={{background:"#fff",borderRadius:12,padding:18,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:18}}>
-        <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"2fr 1.3fr 0.7fr 1.3fr auto",gap:10,alignItems:"end"}}>
-          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Part</label><input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="e.g. Air dryer cartridge" style={inp}/></div>
-          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Part #</label><input value={form.part_number} onChange={e=>setForm(p=>({...p,part_number:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="optional" style={inp}/></div>
-          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Qty</label><input type="number" inputMode="numeric" value={form.quantity} onChange={e=>setForm(p=>({...p,quantity:e.target.value}))} style={inp}/></div>
-          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Order from</label><input value={form.vendor} onChange={e=>setForm(p=>({...p,vendor:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="e.g. Napa, dealer" style={inp}/></div>
-          <button onClick={()=>guard(add)} style={{padding:"11px 20px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:14,minHeight:44}}>+ Add</button>
+      <p style={{margin:"0 0 16px",color:"#888",fontSize:13}}>{pending.length} to order{ordered.length?` · ${ordered.length} ordered`:""}. Pending-order parts from work orders flow in here automatically.</p>
+      <div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:16}}>
+        <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr 1fr":"2fr 1.2fr 0.6fr 1fr 1.2fr 1.2fr auto",gap:10,alignItems:"end"}}>
+          <div><label style={lbl}>Part</label><input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="e.g. Air dryer" style={inp}/></div>
+          <div><label style={lbl}>Part #</label><input list="op-partnums" value={form.part_number} onChange={e=>setForm(p=>({...p,part_number:e.target.value}))} style={inp}/></div>
+          <div><label style={lbl}>Qty</label><input type="number" inputMode="numeric" value={form.quantity} onChange={e=>setForm(p=>({...p,quantity:e.target.value}))} style={inp}/></div>
+          <div><label style={lbl}>Urgency</label><select value={form.urgency} onChange={e=>setForm(p=>({...p,urgency:e.target.value}))} style={inp}>{["High","Medium","Low"].map(u=><option key={u}>{u}</option>)}</select></div>
+          <div><label style={lbl}>Vendor 1st</label><input list="op-vendors" value={form.vendor_primary} onChange={e=>setForm(p=>({...p,vendor_primary:e.target.value}))} style={inp}/></div>
+          <div><label style={lbl}>Vendor 2nd</label><input list="op-vendors" value={form.vendor_secondary} onChange={e=>setForm(p=>({...p,vendor_secondary:e.target.value}))} style={inp}/></div>
+          <button onClick={()=>guard(add)} style={{padding:"11px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:14,minHeight:44}}>+ Add</button>
         </div>
       </div>
+      <div style={{position:"relative",marginBottom:14,maxWidth:420}}>
+        <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"#aaa"}}>🔍</span>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Filter by part, number, vendor, urgency, WO…" style={{width:"100%",padding:"10px 12px 10px 36px",border:"1px solid #ddd",borderRadius:10,fontSize:14}}/>
+      </div>
       <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
-          <thead><tr>{["","Part","Part #","Qty","Order from","Added by",""].map((c,i)=><th key={i} style={{textAlign:"left",padding:"10px 14px",fontSize:11,fontWeight:700,color:"#888",letterSpacing:0.5,textTransform:"uppercase",borderBottom:"2px solid #f0f0f0",whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
-          <tbody>{list.length===0?<tr><td colSpan={7} style={{textAlign:"center",padding:40,color:"#aaa"}}>Nothing to order yet.</td></tr>:list.map(p=>(
-            <tr key={p.id} style={{opacity:p.ordered?0.55:1}}>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}><input type="checkbox" checked={!!p.ordered} onChange={()=>toggle(p)} title="Mark ordered" style={{width:20,height:20,cursor:"pointer",accentColor:"#27ae60"}}/></td>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",fontWeight:600,textDecoration:p.ordered?"line-through":""}}>{p.name}</td>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",fontFamily:"monospace",color:p.part_number?"#c0392b":"#bbb"}}>{p.part_number||"—"}</td>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}>{p.quantity}</td>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}>{p.vendor||"—"}</td>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",fontSize:12,color:"#888"}}>{p.created_by||"—"}</td>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",textAlign:"right"}}><button onClick={()=>del(p)} style={{padding:"5px 10px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,cursor:"pointer",fontSize:13}}>🗑</button></td>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:880}}>
+          <thead><tr>{[th("Urgency"),th("Part"),th("Part #"),th("Qty"),th("Vendor 1st"),th("Vendor 2nd"),th("Created"),th("WO"),th("")].map((x,i)=>React.cloneElement(x,{key:i}))}</tr></thead>
+          <tbody>{pending.length===0?<tr><td colSpan={9} style={{textAlign:"center",padding:36,color:"#aaa"}}>Nothing to order.</td></tr>:pending.map(p=>{const u=URG[p.urgency]||URG.Medium;return(
+            <tr key={p.id}>
+              <td style={td}><select value={p.urgency||"Medium"} onChange={e=>upd(p,{urgency:e.target.value})} style={{...ci,fontWeight:700,color:u.c,background:u.bg,border:"none"}}>{["High","Medium","Low"].map(x=><option key={x} style={{color:"#000",background:"#fff"}}>{x}</option>)}</select></td>
+              <td style={{...td,fontWeight:600}}>{p.name}</td>
+              <td style={{...td,fontFamily:"monospace",color:p.part_number?"#c0392b":"#bbb"}}>{p.part_number||"—"}</td>
+              <td style={td}>{p.quantity}</td>
+              <td style={td}><input list="op-vendors" defaultValue={p.vendor_primary||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.vendor_primary||null))upd(p,{vendor_primary:v});}} style={ci}/></td>
+              <td style={td}><input list="op-vendors" defaultValue={p.vendor_secondary||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.vendor_secondary||null))upd(p,{vendor_secondary:v});}} style={ci}/></td>
+              <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.created_at?fmtDay(p.created_at.slice(0,10)):"—"}</td>
+              <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.work_order_id||"—"}</td>
+              <td style={{...td,whiteSpace:"nowrap",textAlign:"right"}}>
+                <button onClick={()=>guard(()=>markOrdered(p))} style={{padding:"6px 12px",background:"#27ae60",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,minHeight:36}}>✓ Ordered</button>
+                <button onClick={()=>del(p)} style={{marginLeft:6,padding:"6px 10px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,cursor:"pointer",fontSize:13,minHeight:36}}>🗑</button>
+              </td>
             </tr>
-          ))}</tbody>
+          );})}</tbody>
         </table>
+      </div>
+      <div style={{marginTop:18}}>
+        <button onClick={()=>setHistOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,background:"none",border:"none",cursor:"pointer",fontSize:15,fontWeight:700,color:"#1a1a2e",padding:"6px 0"}}>
+          <span>{histOpen?"▾":"▸"}</span> Order history ({ordered.length})
+        </button>
+        {!histOpen&&ordered.length>0&&<div style={{fontSize:12,color:"#888",marginBottom:4}}>{ordered.slice(0,3).map(p=>`${p.name}${p.ordered_at?` (${fmtDay(p.ordered_at)})`:""}`).join(" · ")}{ordered.length>3?` +${ordered.length-3} more`:""}</div>}
+        {histOpen&&(
+          <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginTop:6}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:760}}>
+              <thead><tr>{[th("Part"),th("Part #"),th("Qty"),th("Ordered from"),th("Date ordered"),th("WO"),th("")].map((x,i)=>React.cloneElement(x,{key:i}))}</tr></thead>
+              <tbody>{ordered.length===0?<tr><td colSpan={7} style={{textAlign:"center",padding:30,color:"#aaa"}}>No orders yet.</td></tr>:ordered.map(p=>(
+                <tr key={p.id}>
+                  <td style={{...td,fontWeight:600}}>{p.name}</td>
+                  <td style={{...td,fontFamily:"monospace",color:p.part_number?"#c0392b":"#bbb"}}>{p.part_number||"—"}</td>
+                  <td style={td}>{p.quantity}</td>
+                  <td style={td}><input list="op-vendors" defaultValue={p.ordered_from||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.ordered_from||null))upd(p,{ordered_from:v});}} style={ci}/></td>
+                  <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.ordered_at?fmtDay(p.ordered_at):"—"}</td>
+                  <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.work_order_id||"—"}</td>
+                  <td style={{...td,whiteSpace:"nowrap",textAlign:"right"}}>
+                    <button onClick={()=>unorder(p)} title="Move back to pending" style={{padding:"6px 10px",background:"#f0f0f0",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,minHeight:36}}>↩</button>
+                    <button onClick={()=>del(p)} style={{marginLeft:6,padding:"6px 10px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,cursor:"pointer",fontSize:13,minHeight:36}}>🗑</button>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
