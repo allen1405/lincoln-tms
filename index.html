@@ -544,6 +544,7 @@ const NAV = [
   {id:"employees",label:"Employees",icon:"👤",s:"MENU"},
   {id:"salaries",label:"Salaries",icon:"💰",s:"MENU",admin:true},
   {id:"inventory",label:"Inventory",icon:"📦",s:"SUPPORT",shop:true},
+  {id:"orderparts",label:"Order Parts",icon:"🛒",s:"SUPPORT",shop:true},
   {id:"partsref",label:"Parts Reference",icon:"📇",s:"SUPPORT",shop:true},
   {id:"mysig",label:"My Signature",icon:"✍️",s:"SUPPORT",shop:true},
   {id:"reports",label:"Reports",icon:"📈",s:"SUPPORT",admin:true},
@@ -2916,6 +2917,58 @@ const Estimates = () => {
     </table></div></div>);
 };
 const Inventory = () => (<div><h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Inventory</h1><div style={{background:"#fff",borderRadius:12,padding:60,textAlign:"center",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><div style={{fontSize:48,marginBottom:16}}>🔧</div><h3 style={{margin:"0 0 8px"}}>Coming Soon</h3><p style={{color:"#888"}}>Parts catalog, stock levels, reorder alerts.</p></div></div>);
+// ─── ORDER PARTS ──────────────────────────────────────────────────────────────
+// Simple shared reorder queue: parts the shop needs to order. Not tied to a work order.
+const OrderParts = () => {
+  const user = useContext(UserCtx);
+  const vp = useViewport();
+  const guard = useOnce();
+  const EMPTY={name:"",part_number:"",quantity:"1",vendor:""};
+  const [list,setList]=useState([]); const [loading,setLoading]=useState(true); const [form,setForm]=useState(EMPTY);
+  const load=async()=>{ const {data}=await sb.from('order_parts').select('*').order('ordered',{ascending:true}).order('created_at',{ascending:false}); setList(data||[]); setLoading(false); };
+  useEffect(()=>{load();},[]);
+  const add=async()=>{
+    if(!form.name.trim()){alert("Enter a part name.");return;}
+    const r=await must(sb.from('order_parts').insert([{name:form.name.trim(),part_number:form.part_number.trim()||null,quantity:Number(form.quantity)||1,vendor:form.vendor.trim()||null,ordered:false,created_by:user.name}]),"Could not add part");
+    if(!r)return; setForm(EMPTY); load();
+  };
+  const toggle=async(p)=>{ const r=await must(sb.from('order_parts').update({ordered:!p.ordered}).eq('id',p.id),"Could not update"); if(!r)return; load(); };
+  const del=async(p)=>{ if(!confirm(`Remove "${p.name}" from the order list?`))return; const r=await must(sb.from('order_parts').delete().eq('id',p.id),"Could not delete"); if(!r)return; load(); };
+  if(loading) return <Loading/>;
+  const inp={padding:"10px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14,width:"100%"};
+  const openCount=list.filter(p=>!p.ordered).length;
+  return (
+    <div>
+      <h1 style={{margin:"0 0 6px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Order Parts</h1>
+      <p style={{margin:"0 0 18px",color:"#888",fontSize:13}}>Parts the shop needs to order. {openCount} still to order.</p>
+      <div style={{background:"#fff",borderRadius:12,padding:18,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:18}}>
+        <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr":"2fr 1.3fr 0.7fr 1.3fr auto",gap:10,alignItems:"end"}}>
+          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Part</label><input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="e.g. Air dryer cartridge" style={inp}/></div>
+          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Part #</label><input value={form.part_number} onChange={e=>setForm(p=>({...p,part_number:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="optional" style={inp}/></div>
+          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Qty</label><input type="number" inputMode="numeric" value={form.quantity} onChange={e=>setForm(p=>({...p,quantity:e.target.value}))} style={inp}/></div>
+          <div><label style={{fontSize:12,fontWeight:600,color:"#555"}}>Order from</label><input value={form.vendor} onChange={e=>setForm(p=>({...p,vendor:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="e.g. Napa, dealer" style={inp}/></div>
+          <button onClick={()=>guard(add)} style={{padding:"11px 20px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:14,minHeight:44}}>+ Add</button>
+        </div>
+      </div>
+      <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
+          <thead><tr>{["","Part","Part #","Qty","Order from","Added by",""].map((c,i)=><th key={i} style={{textAlign:"left",padding:"10px 14px",fontSize:11,fontWeight:700,color:"#888",letterSpacing:0.5,textTransform:"uppercase",borderBottom:"2px solid #f0f0f0",whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
+          <tbody>{list.length===0?<tr><td colSpan={7} style={{textAlign:"center",padding:40,color:"#aaa"}}>Nothing to order yet.</td></tr>:list.map(p=>(
+            <tr key={p.id} style={{opacity:p.ordered?0.55:1}}>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}><input type="checkbox" checked={!!p.ordered} onChange={()=>toggle(p)} title="Mark ordered" style={{width:20,height:20,cursor:"pointer",accentColor:"#27ae60"}}/></td>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",fontWeight:600,textDecoration:p.ordered?"line-through":""}}>{p.name}</td>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",fontFamily:"monospace",color:p.part_number?"#c0392b":"#bbb"}}>{p.part_number||"—"}</td>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}>{p.quantity}</td>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5"}}>{p.vendor||"—"}</td>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",fontSize:12,color:"#888"}}>{p.created_by||"—"}</td>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid #f5f5f5",textAlign:"right"}}><button onClick={()=>del(p)} style={{padding:"5px 10px",background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,cursor:"pointer",fontSize:13}}>🗑</button></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
 // ─── PARTS REFERENCE ──────────────────────────────────────────────────────────
 // Live cross-reference: every part name/number ever logged on a WO, grouped by the truck's
 // make/model/year (from the equipment record, else decoded from the VIN) so mechanics can look
@@ -3279,7 +3332,7 @@ const App = () => {
   const pages = {
     dashboard:<Dashboard onNav={setPage}/>,workorders:<WorkOrders/>,customers:<Customers/>,
     appointments:<Appointments/>,reminders:<RemindersPage/>,employees:<EmployeesPage/>,
-    salaries:<Salaries/>,inventory:<Inventory/>,partsref:<PartsReference/>,mysig:<MySignature/>,reports:<Reports/>,
+    salaries:<Salaries/>,inventory:<Inventory/>,orderparts:<OrderParts/>,partsref:<PartsReference/>,mysig:<MySignature/>,reports:<Reports/>,
     invoices:<Invoices/>,estimates:<Estimates/>,auditlog:<AuditLog/>,settings:<Settings/>,
   };
   const canToggleMode = isMech && !vp.isDesktop;
