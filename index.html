@@ -2937,15 +2937,18 @@ const OrderParts = () => {
   const user = useContext(UserCtx);
   const vp = useViewport();
   const guard = useOnce();
-  const EMPTY={name:"",part_number:"",quantity:"1",urgency:"Medium",vendor_primary:"",vendor_secondary:""};
+  const EMPTY={name:"",part_number:"",quantity:"1",urgency:"Medium",vendor_primary:""};
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true); const [form,setForm]=useState(EMPTY);
+  const [vendorList,setVendorList]=useState([]);
   const [q,setQ]=useState(""); const [histOpen,setHistOpen]=useState(false);
+  const loadVendors=async()=>{ const {data}=await sb.from('vendors').select('name').order('name'); setVendorList((data||[]).map(v=>v.name)); };
   const load=async()=>{ const {data}=await sb.from('order_parts').select('*').order('created_at',{ascending:false}); setList(data||[]); setLoading(false); };
-  useEffect(()=>{load();},[]);
+  useEffect(()=>{load();loadVendors();},[]);
+  const saveVendor=async(name)=>{ const n=(name||"").trim(); if(!n||vendorList.includes(n))return; try{ await sb.from('vendors').insert([{name:n}]); }catch(_){} loadVendors(); };
   const add=async()=>{
     if(!form.name.trim()){alert("Enter a part name.");return;}
-    const r=await must(sb.from('order_parts').insert([{name:form.name.trim(),part_number:form.part_number.trim()||null,quantity:Number(form.quantity)||1,urgency:form.urgency,vendor_primary:form.vendor_primary.trim()||null,vendor_secondary:form.vendor_secondary.trim()||null,status:'Pending',created_by:user.name}]),"Could not add part");
-    if(!r)return; setForm(EMPTY); load();
+    const r=await must(sb.from('order_parts').insert([{name:form.name.trim(),part_number:form.part_number.trim()||null,quantity:Number(form.quantity)||1,urgency:form.urgency,vendor_primary:form.vendor_primary.trim()||null,status:'Pending',created_by:user.name}]),"Could not add part");
+    if(!r)return; saveVendor(form.vendor_primary); setForm(EMPTY); load();
   };
   const upd=async(p,patch)=>{ const r=await must(sb.from('order_parts').update(patch).eq('id',p.id),"Could not update"); if(!r)return; load(); };
   const markOrdered=async(p)=>{
@@ -2957,13 +2960,13 @@ const OrderParts = () => {
   const del=async(p)=>{ if(!confirm(`Remove "${p.name}"?`))return; const r=await must(sb.from('order_parts').delete().eq('id',p.id),"Could not delete"); if(!r)return; load(); };
   if(loading) return <Loading/>;
   const ql=q.trim().toLowerCase();
-  const match=p=>!ql||[p.name,p.part_number,p.vendor_primary,p.vendor_secondary,p.ordered_from,p.urgency,p.work_order_id].some(v=>String(v||"").toLowerCase().includes(ql));
+  const match=p=>!ql||[p.name,p.part_number,p.vendor_primary,p.ordered_from,p.urgency,p.work_order_id].some(v=>String(v||"").toLowerCase().includes(ql));
   const URG={High:{bg:"#fdecea",c:"#c0392b"},Medium:{bg:"#fef5e7",c:"#ca6f1e"},Low:{bg:"#eafaf1",c:"#27ae60"}};
   const rank={High:0,Medium:1,Low:2};
   const pending=list.filter(p=>p.status!=="Ordered"&&match(p)).sort((a,b)=>(rank[a.urgency]??1)-(rank[b.urgency]??1));
   const ordered=list.filter(p=>p.status==="Ordered"&&match(p)).sort((a,b)=>String(b.ordered_at||"").localeCompare(String(a.ordered_at||"")));
   const partNums=[...new Set(list.map(p=>p.part_number).filter(Boolean))].sort();
-  const vendors=[...new Set(list.flatMap(p=>[p.vendor_primary,p.vendor_secondary,p.ordered_from]).filter(Boolean))].sort();
+  const vendors=[...new Set([...vendorList,...list.flatMap(p=>[p.vendor_primary,p.ordered_from]).filter(Boolean)])].sort();
   const inp={padding:"9px 11px",border:"1px solid #ddd",borderRadius:8,fontSize:14,width:"100%"};
   const ci={padding:"5px 7px",border:"1px solid #eee",borderRadius:6,fontSize:12,width:"100%",minWidth:84,background:"#fff"};
   const th=c=><th style={{textAlign:"left",padding:"9px 12px",fontSize:10,fontWeight:700,color:"#888",letterSpacing:0.5,textTransform:"uppercase",borderBottom:"2px solid #f0f0f0",whiteSpace:"nowrap"}}>{c}</th>;
@@ -2976,13 +2979,12 @@ const OrderParts = () => {
       <h1 style={{margin:"0 0 6px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Order Parts</h1>
       <p style={{margin:"0 0 16px",color:"#888",fontSize:13}}>{pending.length} to order{ordered.length?` · ${ordered.length} ordered`:""}. Pending-order parts from work orders flow in here automatically.</p>
       <div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:16}}>
-        <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr 1fr":"2fr 1.2fr 0.6fr 1fr 1.2fr 1.2fr auto",gap:10,alignItems:"end"}}>
+        <div style={{display:"grid",gridTemplateColumns:vp.isMobile?"1fr 1fr":"2fr 1.2fr 0.6fr 1fr 1.6fr auto",gap:10,alignItems:"end"}}>
           <div><label style={lbl}>Part</label><input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&guard(add)} placeholder="e.g. Air dryer" style={inp}/></div>
           <div><label style={lbl}>Part #</label><input list="op-partnums" value={form.part_number} onChange={e=>setForm(p=>({...p,part_number:e.target.value}))} style={inp}/></div>
           <div><label style={lbl}>Qty</label><input type="number" inputMode="numeric" value={form.quantity} onChange={e=>setForm(p=>({...p,quantity:e.target.value}))} style={inp}/></div>
           <div><label style={lbl}>Urgency</label><select value={form.urgency} onChange={e=>setForm(p=>({...p,urgency:e.target.value}))} style={inp}>{["High","Medium","Low"].map(u=><option key={u}>{u}</option>)}</select></div>
-          <div><label style={lbl}>Vendor 1st</label><input list="op-vendors" value={form.vendor_primary} onChange={e=>setForm(p=>({...p,vendor_primary:e.target.value}))} style={inp}/></div>
-          <div><label style={lbl}>Vendor 2nd</label><input list="op-vendors" value={form.vendor_secondary} onChange={e=>setForm(p=>({...p,vendor_secondary:e.target.value}))} style={inp}/></div>
+          <div><label style={lbl}>Preferred vendor</label><div style={{display:"flex",gap:6}}><input list="op-vendors" value={form.vendor_primary} onChange={e=>setForm(p=>({...p,vendor_primary:e.target.value}))} placeholder="type or pick" style={inp}/><button onClick={()=>saveVendor(form.vendor_primary)} title="Save this vendor to the dropdown" style={{padding:"0 12px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:700,whiteSpace:"nowrap"}}>＋</button></div></div>
           <button onClick={()=>guard(add)} style={{padding:"11px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:14,minHeight:44}}>+ Add</button>
         </div>
       </div>
@@ -2992,15 +2994,14 @@ const OrderParts = () => {
       </div>
       <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
         <table style={{width:"100%",borderCollapse:"collapse",minWidth:880}}>
-          <thead><tr>{[th("Urgency"),th("Part"),th("Part #"),th("Qty"),th("Vendor 1st"),th("Vendor 2nd"),th("Created"),th("WO"),th("")].map((x,i)=>React.cloneElement(x,{key:i}))}</tr></thead>
-          <tbody>{pending.length===0?<tr><td colSpan={9} style={{textAlign:"center",padding:36,color:"#aaa"}}>Nothing to order.</td></tr>:pending.map(p=>{const u=URG[p.urgency]||URG.Medium;return(
+          <thead><tr>{[th("Urgency"),th("Part"),th("Part #"),th("Qty"),th("Preferred vendor"),th("Created"),th("WO"),th("")].map((x,i)=>React.cloneElement(x,{key:i}))}</tr></thead>
+          <tbody>{pending.length===0?<tr><td colSpan={8} style={{textAlign:"center",padding:36,color:"#aaa"}}>Nothing to order.</td></tr>:pending.map(p=>{const u=URG[p.urgency]||URG.Medium;return(
             <tr key={p.id}>
               <td style={td}><select value={p.urgency||"Medium"} onChange={e=>upd(p,{urgency:e.target.value})} style={{...ci,fontWeight:700,color:u.c,background:u.bg,border:"none"}}>{["High","Medium","Low"].map(x=><option key={x} style={{color:"#000",background:"#fff"}}>{x}</option>)}</select></td>
               <td style={{...td,fontWeight:600}}>{p.name}</td>
               <td style={{...td,fontFamily:"monospace",color:p.part_number?"#c0392b":"#bbb"}}>{p.part_number||"—"}</td>
               <td style={td}>{p.quantity}</td>
-              <td style={td}><input list="op-vendors" defaultValue={p.vendor_primary||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.vendor_primary||null))upd(p,{vendor_primary:v});}} style={ci}/></td>
-              <td style={td}><input list="op-vendors" defaultValue={p.vendor_secondary||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.vendor_secondary||null))upd(p,{vendor_secondary:v});}} style={ci}/></td>
+              <td style={td}><input list="op-vendors" defaultValue={p.vendor_primary||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.vendor_primary||null)){upd(p,{vendor_primary:v});saveVendor(v);}}} style={ci}/></td>
               <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.created_at?fmtDay(p.created_at.slice(0,10)):"—"}</td>
               <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.work_order_id||"—"}</td>
               <td style={{...td,whiteSpace:"nowrap",textAlign:"right"}}>
@@ -3025,7 +3026,7 @@ const OrderParts = () => {
                   <td style={{...td,fontWeight:600}}>{p.name}</td>
                   <td style={{...td,fontFamily:"monospace",color:p.part_number?"#c0392b":"#bbb"}}>{p.part_number||"—"}</td>
                   <td style={td}>{p.quantity}</td>
-                  <td style={td}><input list="op-vendors" defaultValue={p.ordered_from||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.ordered_from||null))upd(p,{ordered_from:v});}} style={ci}/></td>
+                  <td style={td}><input list="op-vendors" defaultValue={p.ordered_from||""} onBlur={e=>{const v=e.target.value.trim()||null;if(v!==(p.ordered_from||null)){upd(p,{ordered_from:v});saveVendor(v);}}} style={ci}/></td>
                   <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.ordered_at?fmtDay(p.ordered_at):"—"}</td>
                   <td style={{...td,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{p.work_order_id||"—"}</td>
                   <td style={{...td,whiteSpace:"nowrap",textAlign:"right"}}>
