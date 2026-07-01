@@ -2096,7 +2096,7 @@ const Customers = () => {
   const user = useContext(UserCtx);
   const guard = useOnce();
   const [list,setList]=useState([]); const [loading,setLoading]=useState(true);
-  const [modal,setModal]=useState(false); const [search,setSearch]=useState("");
+  const [modal,setModal]=useState(false); const [search,setSearch]=useState(""); const [sort,setSort]=useState("recent");
   const [equipTarget,setEquipTarget]=useState(null);
   const [editId,setEditId]=useState(null);
   const EMPTY={name:"",address:"",phone:"",email:"",notes:"",mc_number:"",dot_number:"",truck_count:"",trailer_count:""};
@@ -2165,6 +2165,16 @@ const Customers = () => {
   useEffect(()=>{load();loadPaid();loadRemCounts();},[]);
   const q=search.toLowerCase();
   const filtered=list.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.email||"").toLowerCase().includes(q)||(c.mc_number||"").toLowerCase().includes(q)||(c.dot_number||"").toLowerCase().includes(q));
+  // Sort a copy (don't mutate `list`). "jobs" = completed (Paid) work orders per customer, from paidByCustomer.
+  const jobsDone=c=>paidByCustomer[c.name]||0;
+  const nameOf=c=>(c.name||"").toLowerCase();
+  const sorted=[...filtered].sort((a,b)=>{
+    if(sort==="az") return nameOf(a).localeCompare(nameOf(b));
+    if(sort==="za") return nameOf(b).localeCompare(nameOf(a));
+    if(sort==="jobs") return jobsDone(b)-jobsDone(a) || nameOf(a).localeCompare(nameOf(b));
+    // "recent" — newest first, matching the created_at desc load order
+    return new Date(b.created_at||0)-new Date(a.created_at||0);
+  });
   const openAdd=()=>{setForm(EMPTY);setEditId(null);setModal(true);};
   const openEdit=(c)=>{setForm({name:c.name||"",address:c.address||"",phone:c.phone||"",email:c.email||"",notes:c.notes||"",mc_number:c.mc_number||"",dot_number:c.dot_number||"",truck_count:c.truck_count??"",trailer_count:c.trailer_count??""});setEditId(c.id);setModal(true);};
   const closeModal=()=>{setModal(false);setEditId(null);setForm(EMPTY);};
@@ -2218,9 +2228,17 @@ const Customers = () => {
       <div style={{background:"#fff",borderRadius:12,padding:24,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
           <div><h3 style={{margin:"0 0 2px",fontSize:16,fontWeight:700}}>Your Customers</h3><p style={{margin:0,fontSize:13,color:"#888"}}>Total: {filtered.length}</p></div>
-          <div style={{position:"relative"}}><span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"#aaa"}}>🔍</span><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{padding:"8px 12px 8px 32px",border:"1px solid #ddd",borderRadius:8,fontSize:13}}/></div>
+          <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+            <select value={sort} onChange={e=>setSort(e.target.value)} style={{padding:"8px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:13,background:"#fff",cursor:"pointer",color:"#333"}}>
+              <option value="recent">Sort: Date added</option>
+              <option value="az">Sort: Name A–Z</option>
+              <option value="za">Sort: Name Z–A</option>
+              <option value="jobs">Sort: Jobs done</option>
+            </select>
+            <div style={{position:"relative"}}><span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"#aaa"}}>🔍</span><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{padding:"8px 12px 8px 32px",border:"1px solid #ddd",borderRadius:8,fontSize:13}}/></div>
+          </div>
         </div>
-        {filtered.map(c=>(
+        {sorted.map(c=>(
           <div key={c.id} style={{border:"1px solid #eee",borderRadius:10,padding:16,marginBottom:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div style={{flex:1}}>
