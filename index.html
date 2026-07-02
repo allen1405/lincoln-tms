@@ -1343,7 +1343,7 @@ const WorkOrders = () => {
   const setDotComp=(key,field,v)=>setDot(p=>({...p,components:{...p.components,[key]:{...(p.components[key]||{status:"",note:""}),[field]:v}}}));
   const blankOutbound=(wo)=>({
     inspection_date:todayLocal(), done_by:user.name||"", unit_number:wo.unit_number||"",
-    vehicle_kind:wo.vehicle_type||"", came_with:"", truck_trailer_service:false, apu_service:false,
+    vehicle_kind:(wo.vehicle_type==="Truck"||wo.vehicle_type==="Trailer")?wo.vehicle_type:"", came_with:"", truck_trailer_service:false, apu_service:false,
     reason_here:"", mileage:wo.truck_mileage??"", apu_hours:wo.apu_hours??"", reefer_hours:wo.reefer_hours??"",
     last_annual_date:null, do_new_annual:null,
     checklist:CHECKLIST_LABELS.map(l=>({label:l,checked:false,note:""})),
@@ -3204,7 +3204,7 @@ const Inspections = () => {
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
         <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Inspections</h1>
-        <Btn label="＋ New Inspection" onClick={openNew} color="#c0392b"/>
+        <Btn label="New Inspection" onClick={openNew} color="#c0392b"/>
       </div>
       <div style={{background:"#fff",borderRadius:12,padding:24,boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
         <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}>
