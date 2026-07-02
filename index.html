@@ -1062,6 +1062,8 @@ const WorkOrders = () => {
   const [notesList,setNotesList]=useState([]); const [noteText,setNoteText]=useState("");
   const [jobsModal,setJobsModal]=useState(null);
   const [jobsList,setJobsList]=useState([]); const [jobTab,setJobTab]=useState("jobs");
+  const [outb,setOutb]=useState(null);
+  const [wores,setWores]=useState(null);
   const [newJobName,setNewJobName]=useState(""); const [customJob,setCustomJob]=useState("");
   const [editingJob,setEditingJob]=useState({id:null,name:""});
   const COMMON_JOBS=["Brakes","Oil Change","Tires","Engine Diagnostic","Transmission","Electrical","Suspension","AC/Heating","DOT Inspection","Alignment","Battery","Lights","Exhaust","Coolant","Fuel System"];
@@ -1291,7 +1293,7 @@ const WorkOrders = () => {
     bumpReminders();
     loadEqItems(jobsModal);
   };
-  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id),loadEqItems(wo)]);};
+  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id),loadEqItems(wo),loadOutbound(wo),loadResults(wo)]);};
   const closeWoDetails=()=>{setJobsModal(null);setNoteText("");loadWos();};
   // Desktop combined view: one wide modal showing the editable form (left) + the details tabs (right).
   // Populates BOTH the form state (for editing) and the details state (jobs/parts/etc.) at once.
@@ -1300,7 +1302,7 @@ const WorkOrders = () => {
     setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),end_date:w.end_date??null,is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
     setEditId(w.id);setWoErr("");setCombinedOpen(true);
     setJobsModal(w);setJobTab("jobs");setShopSupply(w.shop_supply||"");shopSupplySaved.current=w.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});
-    await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w)]);
+    await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w),loadOutbound(w),loadResults(w)]);
   };
   const closeCombined=()=>{setModal(false);setCombinedOpen(false);setEditId(null);setForm(empty);setWoErr("");setJobsModal(null);setNoteText("");loadWos();};
   const openWoCard=(w)=>vp.isDesktop?openCombined(w):openJobs(w);
@@ -1338,6 +1340,29 @@ const WorkOrders = () => {
   };
   const setDotField=(k,v)=>setDot(p=>({...p,[k]:v}));
   const setDotComp=(key,field,v)=>setDot(p=>({...p,components:{...p.components,[key]:{...(p.components[key]||{status:"",note:""}),[field]:v}}}));
+  const blankOutbound=(wo)=>({
+    inspection_date:todayLocal(), done_by:user.name||"", unit_number:wo.unit_number||"",
+    vehicle_kind:wo.vehicle_type||"", came_with:"", truck_trailer_service:false, apu_service:false,
+    reason_here:"", mileage:wo.truck_mileage??"", apu_hours:wo.apu_hours??"", reefer_hours:wo.reefer_hours??"",
+    last_annual_date:null, do_new_annual:null,
+    checklist:CHECKLIST_LABELS.map(l=>({label:l,checked:false,note:""})),
+    parts_ordered:{vendors:[],other:"",lines:[]}, findings:[]
+  });
+  const loadOutbound=async(wo)=>{
+    const{data}=await sb.from('outbound_inspections').select('*').eq('work_order_id',wo.id).maybeSingle();
+    setOutb(data?{...blankOutbound(wo),...data,checklist:(data.checklist&&data.checklist.length)?data.checklist:blankOutbound(wo).checklist,parts_ordered:data.parts_ordered||{vendors:[],other:"",lines:[]},findings:data.findings||[]}:blankOutbound(wo));
+  };
+  const setOutbField=(k,v)=>setOutb(p=>({...p,[k]:v}));
+  const setOutbCheck=(i,patch)=>setOutb(p=>({...p,checklist:p.checklist.map((it,idx)=>idx===i?{...it,...patch}:it)}));
+  const addOutbRow=()=>setOutb(p=>({...p,checklist:[...p.checklist,{label:"",checked:false,note:""}]}));
+  const setOutbVendor=(v,on)=>setOutb(p=>({...p,parts_ordered:{...p.parts_ordered,vendors:on?[...(p.parts_ordered.vendors||[]),v]:(p.parts_ordered.vendors||[]).filter(x=>x!==v)}}));
+  const addPartLine=()=>setOutb(p=>({...p,parts_ordered:{...p.parts_ordered,lines:[...(p.parts_ordered.lines||[]),{text:""}]}}));
+  const setPartLine=(i,text)=>setOutb(p=>({...p,parts_ordered:{...p.parts_ordered,lines:p.parts_ordered.lines.map((ln,idx)=>idx===i?{text}:ln)}}));
+  const blankResults=(wo)=>({work_order_id:wo.id,customer:wo.customer||"",unit_number:wo.unit_number||"",vin:wo.vin||"",inspection_date:todayLocal(),inspector:user.name||"",findings:[]});
+  const loadResults=async(wo)=>{
+    const{data}=await sb.from('inspections').select('*').eq('work_order_id',wo.id).maybeSingle();
+    setWores(data?{...blankResults(wo),...data,findings:data.findings||[]}:blankResults(wo));
+  };
   const saveDot=async()=>{
     const payload={work_order_id:jobsModal.id,report_number:dot.report_number||"",fleet_unit_number:dot.fleet_unit_number||"",carrier_operator:dot.carrier_operator,carrier_address:dot.carrier_address,city:dot.city||"",state:dot.state||"",zip:dot.zip||"",inspector:dot.inspector,inspection_date:dot.inspection_date||null,vehicle_make:dot.vehicle_make,vehicle_type:dot.vehicle_type,vin:dot.vin,unit_number:dot.unit_number,license_plate:dot.license_plate,other_id:dot.other_id||"",odometer:dot.odometer,inspection_agency_location:dot.inspection_agency_location||"",overall_result:dot.overall_result,inspector_qualified:dot.inspector_qualified,other_conditions:dot.other_conditions||"",components:dot.components,created_by:user.name,updated_at:new Date().toISOString()};
     const res=await sb.from('dot_inspections').upsert(payload,{onConflict:'work_order_id'}).select().single();
@@ -1345,6 +1370,22 @@ const WorkOrders = () => {
     setDot({...res.data,components:res.data.components||{}});
     audit(user,"update","dot_inspection",jobsModal.id,`${jobsModal.id} — ${dot.carrier_operator}`,`result: ${dot.overall_result||"—"}`);
     alert("DOT inspection saved.");
+  };
+  const saveOutbound=async()=>{
+    const payload={work_order_id:jobsModal.id,inspection_date:outb.inspection_date||null,done_by:outb.done_by,unit_number:outb.unit_number,vehicle_kind:outb.vehicle_kind,came_with:outb.came_with,truck_trailer_service:!!outb.truck_trailer_service,apu_service:!!outb.apu_service,reason_here:outb.reason_here,mileage:outb.mileage,apu_hours:outb.apu_hours,reefer_hours:outb.reefer_hours,last_annual_date:outb.last_annual_date||null,do_new_annual:outb.do_new_annual,checklist:outb.checklist,parts_ordered:outb.parts_ordered,findings:outb.findings,created_by:user.name,updated_at:new Date().toISOString()};
+    const res=await sb.from('outbound_inspections').upsert(payload,{onConflict:'work_order_id'}).select().single();
+    if(res.error){alert("Could not save inspection: "+res.error.message);return;}
+    setOutb({...blankOutbound(jobsModal),...res.data});
+    audit(user,"update","outbound_inspection",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`unit ${outb.unit_number||"—"}`);
+    alert("Outbound/Inbound inspection saved.");
+  };
+  const saveResults=async()=>{
+    const payload={work_order_id:jobsModal.id,customer:wores.customer,unit_number:wores.unit_number,vin:wores.vin,inspection_date:wores.inspection_date||null,inspector:wores.inspector,findings:wores.findings,created_by:user.name,updated_at:new Date().toISOString()};
+    const res=await sb.from('inspections').upsert(payload,{onConflict:'work_order_id'}).select().single();
+    if(res.error){alert("Could not save results: "+res.error.message);return;}
+    setWores({...blankResults(jobsModal),...res.data});
+    audit(user,"update","inspection",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`${(wores.findings||[]).length} findings`);
+    alert("Inspection results saved.");
   };
   const printDot=async()=>{
     // Open the print window synchronously (before any await) so pop-up blockers don't trip.
@@ -1856,6 +1897,8 @@ const WorkOrders = () => {
             <button className={`tab-btn${jobTab==="supply"?" active":""}`} onClick={()=>setJobTab("supply")}>🧴 Shop Supply</button>
             <button className={`tab-btn${jobTab==="notes"?" active":""}`} onClick={()=>{setJobTab("notes");loadNotes(jobsModal.id);}}>📝 Notes ({notesList.length})</button>
             <button className={`tab-btn${jobTab==="dot"?" active":""}`} onClick={()=>setJobTab("dot")}>🛡️ DOT Inspection</button>
+            {jobsModal.customer===A2C_NAME&&<button className={`tab-btn${jobTab==="outbound"?" active":""}`} onClick={()=>setJobTab("outbound")}>🚚 Outbound/Inbound</button>}
+            {jobsModal.customer!==A2C_NAME&&<button className={`tab-btn${jobTab==="results"?" active":""}`} onClick={()=>setJobTab("results")}>📋 Inspection Results</button>}
             <button className={`tab-btn${jobTab==="reminders"?" active":""}`} onClick={()=>setJobTab("reminders")}>🔔 Reminders ({woReminders.length})</button>
             <button className={`tab-btn${jobTab==="photos"?" active":""}`} onClick={()=>setJobTab("photos")}>📷 Photos</button>
           </div>
@@ -2161,6 +2204,68 @@ const WorkOrders = () => {
                 <button onClick={saveDot} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>💾 Save Inspection</button>
                 <button onClick={printDot} style={{padding:"10px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>🖨 Print</button>
                 <span style={{fontSize:11,color:"#888",lineHeight:1.4}}>In the print dialog, expand <strong>More settings</strong> and <strong>uncheck "Headers and footers"</strong> to remove the date / URL line from the printed page. (One-time browser setting.)</span>
+              </div>
+            </div>
+          )}
+          {jobTab==="outbound"&&outb&&(
+            <div style={{padding:"4px 2px"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                <Field label="Date" type="date" value={outb.inspection_date||""} onChange={v=>setOutbField("inspection_date",v)}/>
+                <Field label="Done by" value={outb.done_by||""} onChange={v=>setOutbField("done_by",v)}/>
+                <Field label="Unit #" value={outb.unit_number||""} onChange={v=>setOutbField("unit_number",v)}/>
+                <Field label="Type" value={outb.vehicle_kind||""} onChange={v=>setOutbField("vehicle_kind",v)} options={["","Truck","Trailer"]}/>
+                <Field label="Came with" value={outb.came_with||""} onChange={v=>setOutbField("came_with",v)}/>
+                <Field label="Last annual inspection date" type="date" value={outb.last_annual_date||""} onChange={v=>setOutbField("last_annual_date",v)}/>
+                <Field label="Mileage" value={outb.mileage||""} onChange={v=>setOutbField("mileage",v)}/>
+                <Field label="APU hours" value={outb.apu_hours||""} onChange={v=>setOutbField("apu_hours",v)}/>
+                <Field label="Reefer hours" value={outb.reefer_hours||""} onChange={v=>setOutbField("reefer_hours",v)}/>
+              </div>
+              <Field label="Reason why here" type="textarea" value={outb.reason_here||""} onChange={v=>setOutbField("reason_here",v)}/>
+              <div style={{display:"flex",gap:20,margin:"8px 0",flexWrap:"wrap",fontSize:13}}>
+                <label style={{cursor:"pointer"}}><input type="checkbox" checked={!!outb.truck_trailer_service} onChange={e=>setOutbField("truck_trailer_service",e.target.checked)}/> Truck / Trailer Service</label>
+                <label style={{cursor:"pointer"}}><input type="checkbox" checked={!!outb.apu_service} onChange={e=>setOutbField("apu_service",e.target.checked)}/> APU Service</label>
+                <span>Do a new annual inspection?
+                  <label style={{cursor:"pointer",marginLeft:8}}><input type="radio" name="dna" checked={outb.do_new_annual===true} onChange={()=>setOutbField("do_new_annual",true)}/> Yes</label>
+                  <label style={{cursor:"pointer",marginLeft:8}}><input type="radio" name="dna" checked={outb.do_new_annual===false} onChange={()=>setOutbField("do_new_annual",false)}/> No</label>
+                </span>
+              </div>
+              <h4 style={{margin:"14px 0 6px"}}>Checklist</h4>
+              <div style={{display:"grid",gridTemplateColumns:"1fr",gap:6}}>
+                {outb.checklist.map((it,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+                    <input type="checkbox" checked={!!it.checked} onChange={e=>setOutbCheck(i,{checked:e.target.checked})} style={{width:18,height:18,cursor:"pointer"}}/>
+                    <input value={it.label} onChange={e=>setOutbCheck(i,{label:e.target.value})} placeholder="Item" style={{width:180,padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
+                    <input value={it.note} onChange={e=>setOutbCheck(i,{note:e.target.value})} placeholder="Quantity / comments" style={{flex:1,padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
+                  </div>
+                ))}
+              </div>
+              <button onClick={addOutbRow} style={{marginTop:6,padding:"6px 12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontSize:12}}>＋ Add item</button>
+              <h4 style={{margin:"14px 0 6px"}}>Parts Ordered</h4>
+              <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:13,marginBottom:6}}>
+                {PARTS_VENDORS.map(v=>(<label key={v} style={{cursor:"pointer"}}><input type="checkbox" checked={(outb.parts_ordered.vendors||[]).includes(v)} onChange={e=>setOutbVendor(v,e.target.checked)}/> {v}</label>))}
+                <label style={{cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>Other <input value={outb.parts_ordered.other||""} onChange={e=>setOutbField("parts_ordered",{...outb.parts_ordered,other:e.target.value})} style={{padding:"4px 6px",border:"1px solid #ddd",borderRadius:6,fontSize:13,width:120}}/></label>
+              </div>
+              {(outb.parts_ordered.lines||[]).map((ln,i)=>(<input key={i} value={ln.text} onChange={e=>setPartLine(i,e.target.value)} placeholder="Part…" style={{display:"block",width:"100%",padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13,marginBottom:4}}/>))}
+              <button onClick={addPartLine} style={{padding:"6px 12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontSize:12}}>＋ Add part</button>
+              <h4 style={{margin:"14px 0 6px"}}>Inspection Results</h4>
+              <FindingsEditor findings={outb.findings} onChange={f=>setOutbField("findings",f)}/>
+              <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:14}}>
+                <button onClick={()=>printOutboundInspection({...outb,inspector:outb.done_by,customer:jobsModal.customer},user)} style={{padding:"10px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>🖨 Print</button>
+                <button onClick={saveOutbound} style={{padding:"10px 18px",background:"#27ae60",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Save</button>
+              </div>
+            </div>
+          )}
+          {jobTab==="results"&&wores&&(
+            <div style={{padding:"4px 2px"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:10}}>
+                <Field label="Unit #" value={wores.unit_number||""} onChange={v=>setWores(p=>({...p,unit_number:v}))}/>
+                <Field label="Date" type="date" value={wores.inspection_date||""} onChange={v=>setWores(p=>({...p,inspection_date:v}))}/>
+                <Field label="Done by" value={wores.inspector||""} onChange={v=>setWores(p=>({...p,inspector:v}))}/>
+              </div>
+              <FindingsEditor findings={wores.findings} onChange={f=>setWores(p=>({...p,findings:f}))}/>
+              <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:14}}>
+                <button onClick={()=>printInspectionResults(wores,user)} style={{padding:"10px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>🖨 Print</button>
+                <button onClick={saveResults} style={{padding:"10px 18px",background:"#27ae60",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Save</button>
               </div>
             </div>
           )}
