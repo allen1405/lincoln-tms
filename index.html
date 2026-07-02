@@ -163,10 +163,14 @@ const useOnce = () => {
   };
 };
 const AUDIT_ACTIONS = ["create","update","delete","status_change"];
-const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply","dot_inspection","photo"];
+const AUDIT_ENTITIES = ["work_order","customer","equipment","reminder","job","part","note","appointment","user","shop_supply","dot_inspection","photo","outbound_inspection","inspection"];
 
 // ─── DOT ANNUAL INSPECTION ────────────────────────────────────────────────────
 const SHOP = {name:"Lincoln Truck & Trailer Repair", address:"5940 Colfax Avenue, Lincoln, Nebraska"};
+const A2C_NAME = "A2C Logistics CO";
+// Fixed checklist rows on the Outbound/Inbound form (left column then right column, per the paper form).
+const CHECKLIST_LABELS = ["NY Sticker on truck","Fridge","Microwave","ELD","Tablet","BestPass","Truck Keys","Straps","Chains","Oil","Coolant","Windshield Washer","Windshield Wipers","Fire Extinguisher","Reflective Triangles","Fridge Empty","Cabin Empty","Cabinets Empty"];
+const PARTS_VENDORS = ["International","Freightliner","Kenworth","Peterbilt","Volvo"];
 const DOT_SECTIONS = [
   {num:1,title:"Brake System",items:[
     {key:"brake_service_brakes",label:"Service Brakes"},
