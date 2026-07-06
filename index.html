@@ -272,6 +272,23 @@ const fmtDay = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{mont
 // Central it already reads tomorrow, which flipped reminders overdue hours early.
 const ymdLocal = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const todayLocal = () => ymdLocal(new Date());
+// Split a one-line US address ("5240 W 47th St, Chicago, IL 60638") into street/city/state/zip.
+// Best-effort: reads the trailing "ST 12345" (or bare state / bare zip), then city, then street.
+// Degrades gracefully — a bare street with no commas stays entirely in `street`.
+const parseAddress = (full) => {
+  const parts = String(full||"").trim().split(",").map(p=>p.trim()).filter(Boolean);
+  let street="",city="",state="",zip="";
+  if(parts.length){
+    const last=parts[parts.length-1];
+    const m=last.match(/^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/); // "IL 60638"
+    if(m){ state=m[1].toUpperCase(); zip=m[2]; parts.pop(); }
+    else if(/^\d{5}(?:-\d{4})?$/.test(last)){ zip=last; parts.pop(); }
+    else if(/^[A-Za-z]{2}$/.test(last)){ state=last.toUpperCase(); parts.pop(); }
+  }
+  if(parts.length>=2){ city=parts.pop(); street=parts.join(", "); }
+  else if(parts.length===1){ street=parts[0]; }
+  return {street,city,state,zip};
+};
 const addDaysLocal = n => { const d=new Date(); d.setDate(d.getDate()+Number(n)); return ymdLocal(d); };
 // Revenue model: work_orders.labor is an HOURLY RATE. Revenue = rate × (sum of the WO's
 // job hours) + parts. woHoursMap turns a flat jobs list into work_order_id → total hours.
@@ -1327,11 +1344,21 @@ const WorkOrders = () => {
   const delWoReminder=async(id)=>{if(!confirm("Delete reminder?"))return;const r=await must(sb.from('reminders').delete().eq('id',id),"Could not delete reminder");if(!r)return;audit(user,"delete","reminder",id,`${jobsModal.id}`);loadWoReminders(jobsModal.id);bumpReminders();if(remForm.id===id)setRemForm({id:null,reminder_date:"",note:""});};
   const blankDot=(wo)=>{
     const cust=customers.find(c=>c.name===wo.customer);
-    return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:cust?.address||"",city:"",state:"",zip:"",inspector:user.name||"",inspection_date:todayLocal(),vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
+    const a=parseAddress(cust?.address);
+    return {report_number:"",fleet_unit_number:wo.unit_number||"",carrier_operator:wo.customer||"",carrier_address:a.street,city:a.city,state:a.state,zip:a.zip,inspector:user.name||"",inspection_date:todayLocal(),vehicle_make:"",vehicle_type:"",vin:wo.vin||"",unit_number:wo.unit_number||"",license_plate:"",other_id:"",odometer:"",inspection_agency_location:"",overall_result:"",inspector_qualified:false,other_conditions:"",components:{}};
   };
   const loadDot=async(wo)=>{
     const{data}=await sb.from('dot_inspections').select('*').eq('work_order_id',wo.id).maybeSingle();
-    setDot(data?{...data,components:data.components||{}}:blankDot(wo));
+    if(data){
+      // Legacy records saved the whole address in carrier_address with City/State/ZIP blank.
+      // Re-split on open so the fields (and the printout) show it broken out. Persists on next Save.
+      let d={...data,components:data.components||{}};
+      if(!d.city&&!d.state&&!d.zip&&(d.carrier_address||"").includes(",")){
+        const a=parseAddress(d.carrier_address);
+        d={...d,carrier_address:a.street,city:a.city,state:a.state,zip:a.zip};
+      }
+      setDot(d);
+    } else setDot(blankDot(wo));
   };
   // One query for all 44 DOT component rows instead of one per PhotoSection.
   const loadDotPhotos=async(woId)=>{
