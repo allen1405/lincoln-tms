@@ -294,6 +294,20 @@ const addDaysLocal = n => { const d=new Date(); d.setDate(d.getDate()+Number(n))
 // job hours) + parts. woHoursMap turns a flat jobs list into work_order_id → total hours.
 const woHoursMap = jobs => { const m={}; (jobs||[]).forEach(j=>{ if(j.work_order_id!=null) m[j.work_order_id]=(m[j.work_order_id]||0)+Number(j.labor||0); }); return m; };
 const woRevenue = (w,hours) => (Number(w.labor)||0)*(hours||0) + (Number(w.parts)||0);
+// ── Estimate money + totals (shared by the Estimates page list and the EstimateEditor) ──
+const r2 = n => Math.round((Number(n)||0)*100)/100; // round to cents
+const usd = n => "$"+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const estFid = () => (typeof crypto!=="undefined"&&crypto.randomUUID)?crypto.randomUUID():`${Date.now()}${Math.random().toString(36).slice(2,8)}`; // stable finding id → photos stay attached across add/remove/reorder
+const estTotals = e => {
+  const sum = arr => (arr||[]).reduce((s,l)=>s+(Number(l.amount)||0),0);
+  const parts=r2(sum(e.parts_lines)), labor=r2(sum(e.labor_lines));
+  const subtotal=r2(parts+labor);
+  const tax=r2((e.tax_labor?subtotal:parts)*(Number(e.tax_rate)||0)/100);
+  const withTax=r2(subtotal+tax);
+  const ccFee=e.cc_fee_enabled?r2(withTax*(Number(e.cc_fee_rate)||0)/100):0;
+  const total=r2(withTax+ccFee);
+  return {parts,labor,subtotal,tax,withTax,ccFee,total};
+};
 // Fire after any reminder is completed / rescheduled / deleted so the overdue nav badge
 // reconciles immediately, instead of waiting for the next navigation/refresh.
 const bumpReminders = () => { try { window.dispatchEvent(new Event('reminders-changed')); } catch(_) {} };
@@ -1059,6 +1073,371 @@ async function printOutboundInspection(rec, user) {
   </body></html>`;
   w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 250);
 }
+// ─── ESTIMATE EDITOR ─────────────────────────────────────────────────────────
+// Reusable LTTR-branded estimate form. Used by the WO modal's Estimate tab AND the
+// Estimates page (create/edit). One row per work order (estimates.work_order_id unique).
+const EstimateEditor = ({workOrderId, wo, customers=[], user, onSaved}) => {
+  const [est,setEst]=useState(null);
+  const [estPhotos,setEstPhotos]=useState({}); // entity_id (`${woId}__${finding.id}`) → photos[]
+  const [loading,setLoading]=useState(true);
+  const blankEstimate=(w)=>{
+    const cust=(customers||[]).find(c=>c.name===w.customer);
+    return {estimate_number:`EST-${String(w.id).replace(/^WO-?/,"")}`,estimate_date:todayLocal(),prepared_by:user?.name||"",
+      customer:w.customer||"",customer_email:cust?.email||"",
+      vehicle_make:"",trailer_number:"",unit_number:w.unit_number||"",vin:w.vin||"",driver:"",phone:cust?.phone||"",location:"",
+      findings:[],parts_lines:[{description:"",amount:""}],labor_lines:[{description:"",amount:""}],
+      tax_rate:7.25,tax_labor:true,cc_fee_enabled:true,cc_fee_rate:3.5,tech_notes:[""],customer_authorized:false};
+  };
+  const normEst=(w,data)=>({...blankEstimate(w),...data,
+    findings:(data.findings||[]).map(f=>f&&f.id?f:{...(f||{}),id:estFid()}),
+    parts_lines:(data.parts_lines&&data.parts_lines.length)?data.parts_lines:[{description:"",amount:""}],
+    labor_lines:(data.labor_lines&&data.labor_lines.length)?data.labor_lines:[{description:"",amount:""}],
+    tech_notes:(data.tech_notes&&data.tech_notes.length)?data.tech_notes:[""]});
+  const loadEstPhotos=async()=>{
+    const{data}=await sb.from('photos').select('*').eq('entity_type','estimate_finding').like('entity_id',`${workOrderId}__%`).order('created_at',{ascending:true});
+    const m={};(data||[]).filter(p=>p.entity_id.startsWith(`${workOrderId}__`)).forEach(p=>{(m[p.entity_id]=m[p.entity_id]||[]).push(p);});
+    setEstPhotos(m);
+  };
+  useEffect(()=>{ let alive=true; (async()=>{
+    setLoading(true);
+    const w=wo||{id:workOrderId};
+    const{data}=await sb.from('estimates').select('*').eq('work_order_id',workOrderId).maybeSingle();
+    if(!alive)return;
+    setEst(data?normEst(w,data):blankEstimate(w));
+    await loadEstPhotos();
+    if(alive)setLoading(false);
+  })(); return ()=>{alive=false;}; },[workOrderId]);
+  const setEstField=(k,v)=>setEst(p=>({...p,[k]:v}));
+  const addFinding=()=>setEst(p=>({...p,findings:[...p.findings,{id:estFid(),title:"",description:"",recommendations:[""]}]}));
+  const rmFinding=async(i)=>{
+    const f=(est.findings||[])[i];
+    if(f&&f.id){ // remove this finding's uploaded photos so they don't orphan in storage or reattach to a shifted finding
+      const key=`${workOrderId}__${f.id}`;
+      const {data:phs}=await sb.from('photos').select('id,storage_path').eq('entity_type','estimate_finding').eq('entity_id',key);
+      if(phs&&phs.length){
+        await sb.from('photos').delete().eq('entity_type','estimate_finding').eq('entity_id',key);
+        const paths=phs.map(p=>p.storage_path).filter(Boolean);
+        if(paths.length) await sb.storage.from('tms-photos').remove(paths);
+        loadEstPhotos();
+      }
+    }
+    setEst(p=>({...p,findings:p.findings.filter((_,idx)=>idx!==i)}));
+  };
+  const setFinding=(i,patch)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===i?{...f,...patch}:f)}));
+  const setFindingRec=(fi,ri,v)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===fi?{...f,recommendations:(f.recommendations||[]).map((r,rj)=>rj===ri?v:r)}:f)}));
+  const addFindingRec=(fi)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===fi?{...f,recommendations:[...(f.recommendations||[]),""]}:f)}));
+  const rmFindingRec=(fi,ri)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===fi?{...f,recommendations:(f.recommendations||[]).filter((_,rj)=>rj!==ri)}:f)}));
+  const addLine=(kind)=>setEst(p=>({...p,[kind]:[...p[kind],{description:"",amount:""}]}));
+  const setLine=(kind,i,patch)=>setEst(p=>({...p,[kind]:p[kind].map((ln,idx)=>idx===i?{...ln,...patch}:ln)}));
+  const rmLine=(kind,i)=>setEst(p=>({...p,[kind]:p[kind].filter((_,idx)=>idx!==i)}));
+  const addNote=()=>setEst(p=>({...p,tech_notes:[...p.tech_notes,""]}));
+  const setNote=(i,v)=>setEst(p=>({...p,tech_notes:p.tech_notes.map((n,idx)=>idx===i?v:n)}));
+  const rmNote=(i)=>setEst(p=>({...p,tech_notes:p.tech_notes.filter((_,idx)=>idx!==i)}));
+  const saveEstimate=async()=>{
+    const payload={work_order_id:workOrderId,estimate_number:est.estimate_number||"",estimate_date:est.estimate_date||null,prepared_by:est.prepared_by||"",
+      customer:est.customer||"",customer_email:est.customer_email||"",vehicle_make:est.vehicle_make||"",trailer_number:est.trailer_number||"",unit_number:est.unit_number||"",vin:est.vin||"",driver:est.driver||"",phone:est.phone||"",location:est.location||"",
+      findings:est.findings||[],parts_lines:est.parts_lines||[],labor_lines:est.labor_lines||[],
+      tax_rate:Number(est.tax_rate)||0,tax_labor:!!est.tax_labor,cc_fee_enabled:!!est.cc_fee_enabled,cc_fee_rate:Number(est.cc_fee_rate)||0,
+      tech_notes:est.tech_notes||[],customer_authorized:!!est.customer_authorized,created_by:user?.name||"",updated_at:new Date().toISOString()};
+    const res=await sb.from('estimates').upsert(payload,{onConflict:'work_order_id'}).select().single();
+    if(res.error){alert("Could not save estimate: "+res.error.message);return;}
+    setEst(normEst(wo||{id:workOrderId},res.data));
+    audit(user,"update","estimate",workOrderId,`${workOrderId} — ${est.customer}`,`total ${usd(estTotals(est).total)}`);
+    if(onSaved)onSaved();
+    alert("Estimate saved.");
+  };
+  const printEstimate=async()=>{
+    const w=window.open("","_blank"); // open synchronously so pop-up blockers don't trip
+    if(!w){alert("Pop-up blocked — allow pop-ups to print.");return;}
+    const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    const t=estTotals(est);
+    let photoMap={};
+    try{ const {data}=await sb.from('photos').select('entity_id,public_url,created_at').eq('entity_type','estimate_finding').like('entity_id',`${workOrderId}__%`).order('created_at',{ascending:true});
+      (data||[]).forEach(p=>{ if(p.entity_id.startsWith(`${workOrderId}__`)){(photoMap[p.entity_id]=photoMap[p.entity_id]||[]).push(p.public_url);} }); }catch(_){}
+    const findingsHtml=(est.findings||[]).map((f,i)=>{
+      const recs=(f.recommendations||[]).filter(r=>String(r).trim());
+      const recHtml=recs.length?`<div class="rec-h">Recommended Repair:</div><ul>${recs.map(r=>`<li>${esc(r)}</li>`).join("")}</ul>`:"";
+      const ph=photoMap[`${workOrderId}__${f.id}`]||[];
+      const phHtml=ph.length?`<div class="photos">${ph.map(u=>`<div class="ph"><img src="${esc(u)}"/></div>`).join("")}</div>`:"";
+      return `<div class="finding"><div class="ftitle">FINDING #${i+1} — ${esc((f.title||"").toUpperCase())}</div><div class="fdesc">${esc(f.description)}</div>${recHtml}${phHtml}</div>`;
+    }).join("")||`<div class="fdesc" style="color:#999">No findings recorded.</div>`;
+    const lineRows=arr=>(arr||[]).filter(l=>String(l.description||"").trim()||Number(l.amount)).map(l=>`<tr><td>${esc(l.description)}</td><td class="n">${usd(l.amount)}</td></tr>`).join("")||`<tr><td style="color:#999">—</td><td class="n">$0.00</td></tr>`;
+    const notesHtml=(est.tech_notes||[]).filter(n=>String(n).trim()).map(n=>`<div class="n"><span class="ck">✔</span><span>${esc(n)}</span></div>`).join("")||`<div class="n" style="color:#999">No notes.</div>`;
+    const kv=(k,v)=>`<div class="kv"><span class="k">${k}:</span><span class="v">${esc(v)}</span></div>`;
+    const html=`<!DOCTYPE html><html><head><title></title><style>
+      @page{size:letter;margin:0}
+      *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      html,body{margin:0;padding:0;height:100%}
+      body{font-family:"Helvetica Neue",Arial,sans-serif;color:#1a1a2e;font-size:11px;line-height:1.35;background:#fff}
+      /* Fill the page: sheet is a full-height flex column; the content region grows so the
+         footer band always sits at the bottom of the sheet (no short-page white gap). */
+      .sheet{width:8.5in;min-height:100vh;margin:0 auto;display:flex;flex-direction:column}
+      .pad{padding:0 0.4in;flex:1 0 auto}
+      .hdr{background:#17171b;color:#fff;padding:16px 0.4in 14px;display:flex;justify-content:space-between;align-items:center;flex:0 0 auto}
+      .brand .lincoln{font-size:30px;font-weight:900;letter-spacing:-0.5px;line-height:0.9;color:#fff;text-shadow:2px 2px 0 #c0392b;font-style:italic}
+      .brand .tt{font-size:12.5px;font-weight:800;letter-spacing:3px;color:#fff;margin-top:4px}
+      .brand .tt b{color:#e74c3c}
+      .brand .tag{font-size:12px;font-style:italic;color:#e74c3c;font-weight:700;margin-top:3px}
+      .brand .sub{font-size:9px;letter-spacing:1.5px;color:#cfcfd4;font-weight:700}
+      .hdr-right{text-align:right}
+      .hdr-right .row{display:flex;align-items:center;justify-content:flex-end;gap:7px;font-size:11.5px;font-weight:600;margin-bottom:4px}
+      .hdr-right .dot{width:15px;height:15px;border-radius:50%;background:#c0392b;display:inline-flex;align-items:center;justify-content:center;font-size:8px}
+      .hdr-right .emer{margin-top:6px}
+      .hdr-right .emer .big{color:#e74c3c;font-size:19px;font-weight:900;font-style:italic;line-height:1}
+      .hdr-right .emer .lil{font-size:8.5px;font-weight:700;letter-spacing:1px;color:#fff}
+      .sec-bar{display:inline-block;background:#c0392b;color:#fff;font-size:11px;font-weight:800;letter-spacing:0.5px;padding:4px 12px;margin:14px 0 8px}
+      .doc-title{text-align:center;margin:12px 0 2px}
+      .doc-title .t{font-size:17px;font-weight:900;letter-spacing:2px;color:#1a1a2e}
+      .doc-title .m{font-size:10px;color:#888;font-weight:600;letter-spacing:1px}
+      .two{display:flex;gap:14px}
+      .box{border:1px solid #d8d8dd;border-radius:3px;padding:10px 12px}
+      .box.cust{flex:0 0 40%}.box.veh{flex:1}
+      .cust .name{font-size:14px;font-weight:800;margin-bottom:5px}
+      .cust .line{font-size:11px;color:#444;margin-bottom:2px}
+      .veh-grid{display:grid;grid-template-columns:1fr 1fr;gap:3px 18px}
+      .kv{font-size:11px;display:flex;gap:5px;padding:2px 0;border-bottom:1px solid #eee}
+      .kv .k{font-weight:800;color:#1a1a2e;white-space:nowrap}.kv .v{color:#333}
+      .kv.wide{grid-column:1 / -1}
+      .finding{margin-bottom:12px;page-break-inside:avoid}
+      .finding .ftitle{color:#c0392b;font-size:12.5px;font-weight:900;letter-spacing:0.3px;margin-bottom:4px}
+      .finding .fdesc{font-size:11px;color:#333;margin-bottom:5px}
+      .finding .rec-h{color:#c0392b;font-size:10.5px;font-weight:800;margin:4px 0 2px}
+      .finding ul{margin:0 0 6px;padding-left:16px}
+      .finding li{font-size:10.5px;color:#333;margin-bottom:1px}
+      .photos{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:5px}
+      .photos .ph{aspect-ratio:4/3;border-radius:3px;overflow:hidden;background:#ececf0;border:1px solid #dcdce2}
+      .photos .ph img{width:100%;height:100%;object-fit:cover;display:block}
+      .est-row{display:flex;gap:14px;align-items:flex-start}
+      .est-col{flex:1}.est-col.sum{flex:0 0 34%}
+      table.est{width:100%;border-collapse:collapse}
+      table.est th{text-align:left;font-size:9.5px;font-weight:800;color:#666;letter-spacing:0.5px;border-bottom:1.5px solid #1a1a2e;padding:4px 4px}
+      table.est th.n,table.est td.n{text-align:right;white-space:nowrap}
+      table.est td{font-size:11px;padding:5px 4px;border-bottom:1px solid #eee;vertical-align:top}
+      .tbl-total{background:#17171b;color:#fff;display:flex;justify-content:space-between;padding:7px 10px;font-size:12px;font-weight:800;letter-spacing:0.5px;margin-top:4px}
+      .summary .srow{display:flex;justify-content:space-between;font-size:11px;padding:3px 0}
+      .summary .srow.b{font-weight:800}
+      .summary .srow.tax{color:#c0392b;font-weight:700}
+      .summary .div{border-top:1px solid #ddd;margin:3px 0}
+      .total-due{background:#17171b;color:#fff;text-align:center;padding:10px;margin-top:6px;border-radius:3px}
+      .total-due .l{color:#e74c3c;font-size:12px;font-weight:800;letter-spacing:2px}
+      .total-due .a{font-size:26px;font-weight:900;line-height:1.1}
+      .total-due .note{background:#c0392b;color:#fff;font-size:8px;font-weight:700;letter-spacing:0.5px;padding:4px;margin-top:6px}
+      .bottom{display:flex;gap:14px;margin-top:14px;page-break-inside:avoid}
+      .bottom .col{flex:1;border:1px solid #d8d8dd;border-radius:3px;padding:10px 12px}
+      .notes .n{font-size:10.5px;color:#333;margin-bottom:4px;display:flex;gap:6px}
+      .notes .n .ck{color:#c0392b;font-weight:900}
+      .appr .auth{font-size:11px;color:#333;margin-bottom:10px}
+      .appr .amt{font-size:13px;font-weight:800;margin-bottom:16px}
+      .appr .amt b{color:#c0392b;font-size:15px}
+      .appr .sig{display:flex;gap:14px}
+      .appr .sig .cell{flex:1;border-top:1px solid #333;padding-top:3px;font-size:9px;color:#666}
+      .appr .sig .cell.date{flex:0 0 32%}
+      .ftr{background:#17171b;color:#fff;margin-top:16px;padding:12px 0.4in;display:flex;align-items:center;justify-content:space-between;flex:0 0 auto}
+      .ftr .svcs{display:flex;gap:16px}
+      .ftr .svc{text-align:center;font-size:7.5px;font-weight:700;letter-spacing:0.5px;color:#cfcfd4}
+      .ftr .svc .i{font-size:15px;display:block;margin-bottom:2px}
+      .ftr .ins{text-align:right}
+      .ftr .ins .badge{border:1.5px solid #c0392b;border-radius:20px;padding:3px 12px;font-size:10px;font-weight:800;color:#fff;display:inline-block}
+      .ftr .ins .tl{font-size:8px;font-weight:700;letter-spacing:1px;color:#cfcfd4;margin-top:4px}
+      .ftr .ins .tl b{color:#e74c3c}
+    </style></head><body>
+    <div class="sheet">
+      <div class="hdr">
+        <div class="brand">
+          <div class="lincoln">LINCOLN</div>
+          <div class="tt">TRUCK <b>&amp;</b> TRAILER <b>REPAIR</b></div>
+          <div class="tag">We Keep You Rolling.</div>
+          <div class="sub">24/7 EMERGENCY ROAD SERVICE</div>
+        </div>
+        <div class="hdr-right">
+          <div class="row"><span class="dot">✆</span> (402) 409-1984</div>
+          <div class="row"><span class="dot">✉</span> service@lincolntruckrepair.com</div>
+          <div class="row"><span class="dot">⌂</span> Lincoln, NE · 5940 Colfax Ave</div>
+          <div class="emer"><div class="big">24/7</div><div class="lil">ON-SITE REPAIR WHEN YOU NEED US MOST</div></div>
+        </div>
+      </div>
+      <div class="pad">
+        <div class="doc-title">
+          <div class="t">REPAIR ESTIMATE</div>
+          <div class="m">Estimate #${esc(est.estimate_number||workOrderId)} &nbsp;·&nbsp; Date: ${esc(fmtDay(est.estimate_date||todayLocal()))}${est.prepared_by?` &nbsp;·&nbsp; Prepared by: ${esc(est.prepared_by)}`:""}</div>
+        </div>
+        <div class="sec-bar">CUSTOMER INFORMATION</div>
+        <div class="two">
+          <div class="box cust">
+            <div class="name">${esc(est.customer)||"&nbsp;"}</div>
+            ${est.customer_email?`<div class="line">${esc(est.customer_email)}</div>`:""}
+          </div>
+          <div class="box veh">
+            <div class="veh-grid">
+              ${kv("Truck",est.vehicle_make)}${kv("Unit #",est.unit_number)}
+              ${kv("Trailer #",est.trailer_number)}${kv("VIN",est.vin)}
+              ${kv("Driver",est.driver)}${kv("Phone",est.phone)}
+              <div class="kv wide"><span class="k">Location:</span><span class="v">${esc(est.location)}</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="sec-bar">INSPECTION FINDINGS</div>
+        ${findingsHtml}
+        <div class="sec-bar">ESTIMATE</div>
+        <div class="est-row">
+          <div class="est-col">
+            <table class="est"><thead><tr><th>PARTS</th><th class="n">AMOUNT</th></tr></thead><tbody>${lineRows(est.parts_lines)}</tbody></table>
+            <div class="tbl-total"><span>PARTS TOTAL</span><span>${usd(t.parts)}</span></div>
+            <table class="est" style="margin-top:12px"><thead><tr><th>LABOR</th><th class="n">AMOUNT</th></tr></thead><tbody>${lineRows(est.labor_lines)}</tbody></table>
+            <div class="tbl-total"><span>LABOR TOTAL</span><span>${usd(t.labor)}</span></div>
+          </div>
+          <div class="est-col sum">
+            <div class="sec-bar" style="margin-top:0">ESTIMATE SUMMARY</div>
+            <div class="summary">
+              <div class="srow"><span>Parts Total</span><span>${usd(t.parts)}</span></div>
+              <div class="srow"><span>Labor Total</span><span>${usd(t.labor)}</span></div>
+              <div class="div"></div>
+              <div class="srow b"><span>SUBTOTAL</span><span>${usd(t.subtotal)}</span></div>
+              <div class="srow tax"><span>Sales Tax (${esc(est.tax_rate)}%)${est.tax_labor?"":" — parts only"}</span><span>${usd(t.tax)}</span></div>
+              <div class="div"></div>
+              <div class="srow b"><span>SUBTOTAL WITH TAX</span><span>${usd(t.withTax)}</span></div>
+              ${est.cc_fee_enabled?`<div class="srow"><span>Credit Card Fee (${esc(est.cc_fee_rate)}%)</span><span>${usd(t.ccFee)}</span></div>`:""}
+              <div class="total-due">
+                <div class="l">TOTAL DUE</div>
+                <div class="a">${usd(t.total)}</div>
+                <div class="note">TOTAL INCLUDES SALES TAX${est.cc_fee_enabled?` AND ${esc(est.cc_fee_rate)}% CREDIT CARD FEE`:""}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="bottom">
+          <div class="col notes">
+            <div class="sec-bar" style="margin-top:0">TECHNICIAN NOTES</div>
+            ${notesHtml}
+          </div>
+          <div class="col appr">
+            <div class="sec-bar" style="margin-top:0">CUSTOMER APPROVAL</div>
+            <div class="auth">I authorize the above repairs to be performed.</div>
+            <div class="amt">Approved Amount: <b>${usd(t.total)}</b></div>
+            <div class="sig"><div class="cell">Signature</div><div class="cell date">Date</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="ftr">
+        <div class="svcs">
+          <div class="svc"><span class="i">🔧</span>ENGINE</div>
+          <div class="svc"><span class="i">🛑</span>BRAKES</div>
+          <div class="svc"><span class="i">⚡</span>ELECTRICAL</div>
+          <div class="svc"><span class="i">💧</span>HYDRAULICS</div>
+          <div class="svc"><span class="i">🛞</span>TIRES</div>
+          <div class="svc"><span class="i">💻</span>DIAGNOSTICS</div>
+        </div>
+        <div class="ins">
+          <div class="badge">FULLY INSURED</div>
+          <div class="tl"><b>FAST · RELIABLE · PROFESSIONAL</b><br>KEEPING YOU ON THE ROAD</div>
+        </div>
+      </div>
+    </div>
+    <script>window.onload=function(){setTimeout(function(){window.print()},300)}<\/script>
+    </body></html>`;
+    w.document.write(html);w.document.close();w.focus();
+  };
+  if(loading||!est) return <Loading/>;
+  const t=estTotals(est);
+  const inp={flex:1,padding:"8px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13};
+  return (
+    <div>
+      <div style={{border:"1px solid #ddd",borderRadius:8,padding:14,marginBottom:14,background:"#fff"}}>
+        <div style={{fontSize:11,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Estimate · {workOrderId}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+          <Field label="Estimate number" value={est.estimate_number||""} onChange={v=>setEstField("estimate_number",v)}/>
+          <Field label="Date" value={est.estimate_date||""} onChange={v=>setEstField("estimate_date",v)} type="date"/>
+          <Field label="Prepared by" value={est.prepared_by||""} onChange={v=>setEstField("prepared_by",v)}/>
+        </div>
+      </div>
+      <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Customer</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Customer" value={est.customer||""} onChange={v=>setEstField("customer",v)}/>
+          <Field label="Customer email" value={est.customer_email||""} onChange={v=>setEstField("customer_email",v)}/>
+        </div>
+      </div>
+      <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Vehicle</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+          <Field label="Truck (year/make/model)" value={est.vehicle_make||""} onChange={v=>setEstField("vehicle_make",v)} placeholder="2021 International LT625"/>
+          <Field label="Unit #" value={est.unit_number||""} onChange={v=>setEstField("unit_number",v)}/>
+          <Field label="Trailer #" value={est.trailer_number||""} onChange={v=>setEstField("trailer_number",v)}/>
+          <Field label="VIN" value={est.vin||""} onChange={v=>setEstField("vin",v)}/>
+          <Field label="Driver" value={est.driver||""} onChange={v=>setEstField("driver",v)}/>
+          <Field label="Phone" value={est.phone||""} onChange={v=>setEstField("phone",v)}/>
+        </div>
+        <Field label="Location" value={est.location||""} onChange={v=>setEstField("location",v)} placeholder="Love's Truck Care, 9650 S 20th St…"/>
+      </div>
+      <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,margin:"4px 0 4px"}}>Inspection Findings</div>
+      <div style={{fontSize:12,color:"#888",marginBottom:8}}>Add a finding, then use <strong>📷 Finding photos</strong> under it to upload pictures (phone camera roll or computer). Those photos print in the finding's grid.</div>
+      {(est.findings||[]).map((f,fi)=>(
+        <div key={f.id||fi} style={{border:"1px solid #eee",borderRadius:8,padding:14,marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{fontSize:13,fontWeight:800,color:"#c0392b"}}>Finding #{fi+1}</div>
+            <button onClick={()=>rmFinding(fi)} style={{background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:700}}>Remove</button>
+          </div>
+          <Field label="Title" value={f.title||""} onChange={v=>setFinding(fi,{title:v})} placeholder="Power Steering System Leak"/>
+          <Field label="Description" value={f.description||""} onChange={v=>setFinding(fi,{description:v})} type="textarea"/>
+          <div style={{fontSize:12,fontWeight:700,color:"#888",margin:"6px 0 4px"}}>Recommended repair</div>
+          {(f.recommendations||[]).map((r,ri)=>(
+            <div key={ri} style={{display:"flex",gap:8,marginBottom:6}}>
+              <input value={r} onChange={e=>setFindingRec(fi,ri,e.target.value)} placeholder="Replace leaking power steering hoses" style={inp}/>
+              <button onClick={()=>rmFindingRec(fi,ri)} style={{background:"#f4f4f4",border:"none",borderRadius:6,padding:"0 10px",cursor:"pointer",color:"#888"}}>×</button>
+            </div>
+          ))}
+          <button onClick={()=>addFindingRec(fi)} style={{background:"none",border:"1px dashed #c0392b",color:"#c0392b",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:12,fontWeight:600,marginBottom:8}}>+ Add repair line</button>
+          <div style={{marginTop:6}}><PhotoSection entityType="estimate_finding" entityId={`${workOrderId}__${f.id}`} label="📷 Finding photos" photos={estPhotos[`${workOrderId}__${f.id}`]||[]} onChanged={loadEstPhotos}/></div>
+        </div>
+      ))}
+      <button onClick={addFinding} style={{background:"#c0392b",color:"#fff",border:"none",borderRadius:8,padding:"8px 14px",cursor:"pointer",fontSize:13,fontWeight:600,marginBottom:16}}>+ Add finding</button>
+      {["parts_lines","labor_lines"].map(kind=>(
+        <div key={kind} style={{marginBottom:14}}>
+          <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>{kind==="parts_lines"?"Parts":"Labor"}</div>
+          {(est[kind]||[]).map((ln,i)=>(
+            <div key={i} style={{display:"flex",gap:8,marginBottom:6,alignItems:"center"}}>
+              <input value={ln.description||""} onChange={e=>setLine(kind,i,{description:e.target.value})} placeholder={kind==="parts_lines"?"Power Steering Hoses (2)":"Mobile Service Call Out"} style={inp}/>
+              <div style={{position:"relative"}}><span style={{position:"absolute",left:8,top:9,color:"#888",fontSize:13}}>$</span><input value={ln.amount} onChange={e=>setLine(kind,i,{amount:e.target.value})} inputMode="decimal" placeholder="0.00" style={{width:120,padding:"8px 10px 8px 18px",border:"1px solid #ddd",borderRadius:6,fontSize:13,textAlign:"right"}}/></div>
+              <button onClick={()=>rmLine(kind,i)} style={{background:"#f4f4f4",border:"none",borderRadius:6,padding:"0 10px",minHeight:34,cursor:"pointer",color:"#888"}}>×</button>
+            </div>
+          ))}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <button onClick={()=>addLine(kind)} style={{background:"none",border:"1px dashed #c0392b",color:"#c0392b",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:12,fontWeight:600}}>+ Add line</button>
+            <div style={{fontSize:13,fontWeight:800}}>{kind==="parts_lines"?"Parts":"Labor"} total: {usd(kind==="parts_lines"?t.parts:t.labor)}</div>
+          </div>
+        </div>
+      ))}
+      <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Tax &amp; Fees</div>
+        <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"center",marginBottom:10}}>
+          <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6}}>Sales tax %<input value={est.tax_rate} onChange={e=>setEstField("tax_rate",e.target.value)} inputMode="decimal" style={{width:70,padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/></label>
+          <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={!!est.tax_labor} onChange={e=>setEstField("tax_labor",e.target.checked)} style={{width:16,height:16,accentColor:"#c0392b"}}/>Tax labor too</label>
+          <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={!!est.cc_fee_enabled} onChange={e=>setEstField("cc_fee_enabled",e.target.checked)} style={{width:16,height:16,accentColor:"#c0392b"}}/>Credit card fee</label>
+          <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6}}>Fee %<input value={est.cc_fee_rate} onChange={e=>setEstField("cc_fee_rate",e.target.value)} inputMode="decimal" disabled={!est.cc_fee_enabled} style={{width:70,padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13,opacity:est.cc_fee_enabled?1:0.5}}/></label>
+        </div>
+        <div style={{borderTop:"1px solid #e5e5e5",paddingTop:10,maxWidth:320,marginLeft:"auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"2px 0"}}><span>Subtotal</span><span>{usd(t.subtotal)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"2px 0",color:"#c0392b"}}><span>Sales tax ({est.tax_rate}%){est.tax_labor?"":" — parts only"}</span><span>{usd(t.tax)}</span></div>
+          {est.cc_fee_enabled&&<div style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"2px 0"}}><span>Card fee ({est.cc_fee_rate}%)</span><span>{usd(t.ccFee)}</span></div>}
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:800,borderTop:"2px solid #1a1a2e",marginTop:6,paddingTop:6}}><span>Total due</span><span>{usd(t.total)}</span></div>
+        </div>
+      </div>
+      <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,margin:"4px 0 8px"}}>Technician Notes</div>
+      {(est.tech_notes||[]).map((n,i)=>(
+        <div key={i} style={{display:"flex",gap:8,marginBottom:6}}>
+          <input value={n} onChange={e=>setNote(i,e.target.value)} placeholder="Note visible on the estimate" style={inp}/>
+          <button onClick={()=>rmNote(i)} style={{background:"#f4f4f4",border:"none",borderRadius:6,padding:"0 10px",cursor:"pointer",color:"#888"}}>×</button>
+        </div>
+      ))}
+      <button onClick={addNote} style={{background:"none",border:"1px dashed #c0392b",color:"#c0392b",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:12,fontWeight:600,marginBottom:16}}>+ Add note</button>
+      <div style={{display:"flex",gap:10,marginTop:8,flexWrap:"wrap",alignItems:"center",position:"sticky",bottom:0,background:"#fff",padding:"10px 0",borderTop:"1px solid #eee"}}>
+        <button onClick={saveEstimate} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>💾 Save Estimate</button>
+        <button onClick={printEstimate} style={{padding:"10px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>🖨 Print</button>
+        <span style={{fontSize:11,color:"#888",lineHeight:1.4}}>Save before printing to keep the latest edits. In the print dialog, uncheck <strong>"Headers and footers"</strong> for a clean sheet.</span>
+      </div>
+    </div>
+  );
+};
 // ─── WORK ORDERS ─────────────────────────────────────────────────────────────
 const WorkOrders = () => {
   const user = useContext(UserCtx);
@@ -1095,8 +1474,6 @@ const WorkOrders = () => {
   const shopSupplySaved=React.useRef("");
   const [dot,setDot]=useState(null);
   const [dotPhotos,setDotPhotos]=useState({}); // entity_id ("WOID__componentkey") → photos[]
-  const [est,setEst]=useState(null);
-  const [estPhotos,setEstPhotos]=useState({}); // entity_id ("WOID__findingIndex") → photos[]
   const [woReminders,setWoReminders]=useState([]);
   const [eqItems,setEqItems]=useState(null); // {equipment, items} for the open WO's linked equipment
   const [remForm,setRemForm]=useState({id:null,reminder_date:"",note:""});
@@ -1313,7 +1690,7 @@ const WorkOrders = () => {
     bumpReminders();
     loadEqItems(jobsModal);
   };
-  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id),loadEqItems(wo),loadOutbound(wo),loadResults(wo),loadEstimate(wo),loadEstPhotos(wo.id)]);};
+  const openJobs=async(wo)=>{setJobsModal(wo);setJobTab("jobs");setShopSupply(wo.shop_supply||"");shopSupplySaved.current=wo.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});await Promise.all([loadJobs(wo.id),loadNotes(wo.id),loadParts(wo.id),loadDot(wo),loadDotPhotos(wo.id),loadWoReminders(wo.id),loadEqItems(wo),loadOutbound(wo),loadResults(wo)]);};
   const closeWoDetails=()=>{setJobsModal(null);setNoteText("");loadWos();};
   // Desktop combined view: one wide modal showing the editable form (left) + the details tabs (right).
   // Populates BOTH the form state (for editing) and the details state (jobs/parts/etc.) at once.
@@ -1322,7 +1699,7 @@ const WorkOrders = () => {
     setForm({id:w.id,customer:w.customer||"",unit_number:w.unit_number||"",vin:w.vin||"",equipment_id:w.equipment_id??null,vehicle_type:w.vehicle_type||"",mechanic:w.mechanic||"",description:w.description||"",labor:w.labor??0,parts:w.parts??0,status:w.status||"Waiting list",date:w.date||todayLocal(),end_date:w.end_date??null,is_road_call:!!w.is_road_call,truck_mileage:w.truck_mileage??"",apu_hours:w.apu_hours??"",apu_hours_since_oil:w.apu_hours_since_oil??"",reefer_hours:w.reefer_hours??"",reefer_hours_since_oil:w.reefer_hours_since_oil??""});
     setEditId(w.id);setWoErr("");setCombinedOpen(true);
     setJobsModal(w);setJobTab("jobs");setShopSupply(w.shop_supply||"");shopSupplySaved.current=w.shop_supply||"";setRemForm({id:null,reminder_date:"",note:""});
-    await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w),loadOutbound(w),loadResults(w),loadEstimate(w),loadEstPhotos(w.id)]);
+    await Promise.all([loadJobs(w.id),loadNotes(w.id),loadParts(w.id),loadDot(w),loadDotPhotos(w.id),loadWoReminders(w.id),loadEqItems(w),loadOutbound(w),loadResults(w)]);
   };
   const closeCombined=()=>{setModal(false);setCombinedOpen(false);setEditId(null);setForm(empty);setWoErr("");setJobsModal(null);setNoteText("");loadWos();};
   const openWoCard=(w)=>vp.isDesktop?openCombined(w):openJobs(w);
@@ -1416,271 +1793,6 @@ const WorkOrders = () => {
     setWores({...blankResults(jobsModal),...res.data});
     audit(user,"update","inspection",jobsModal.id,`${jobsModal.id} — ${jobsModal.customer}`,`${(wores.findings||[]).length} findings`);
     alert("Inspection results saved.");
-  };
-  // ── ESTIMATE (LTTR-branded repair estimate; one row per WO, mirrors DOT/outbound) ──
-  const r2=n=>Math.round((Number(n)||0)*100)/100; // round to cents
-  const usd=n=>"$"+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const fid=()=>(typeof crypto!=="undefined"&&crypto.randomUUID)?crypto.randomUUID():`${Date.now()}${Math.random().toString(36).slice(2,8)}`; // stable finding id → photos stay attached across add/remove/reorder
-  const estTotals=(e)=>{
-    const sum=arr=>(arr||[]).reduce((s,l)=>s+(Number(l.amount)||0),0);
-    const parts=r2(sum(e.parts_lines)), labor=r2(sum(e.labor_lines));
-    const subtotal=r2(parts+labor);
-    const tax=r2((e.tax_labor?subtotal:parts)*(Number(e.tax_rate)||0)/100);
-    const withTax=r2(subtotal+tax);
-    const ccFee=e.cc_fee_enabled?r2(withTax*(Number(e.cc_fee_rate)||0)/100):0;
-    const total=r2(withTax+ccFee);
-    return {parts,labor,subtotal,tax,withTax,ccFee,total};
-  };
-  const blankEstimate=(wo)=>{
-    const cust=customers.find(c=>c.name===wo.customer);
-    return {estimate_number:`EST-${String(wo.id).replace(/^WO-?/,"")}`,estimate_date:todayLocal(),prepared_by:user.name||"",
-      customer:wo.customer||"",customer_email:cust?.email||"",
-      vehicle_make:"",trailer_number:"",unit_number:wo.unit_number||"",vin:wo.vin||"",driver:"",phone:cust?.phone||"",location:"",
-      findings:[],parts_lines:[{description:"",amount:""}],labor_lines:[{description:"",amount:""}],
-      tax_rate:7.25,tax_labor:true,cc_fee_enabled:true,cc_fee_rate:3.5,tech_notes:[""],customer_authorized:false};
-  };
-  const normEst=(wo,data)=>({...blankEstimate(wo),...data,
-    findings:(data.findings||[]).map(f=>f&&f.id?f:{...(f||{}),id:fid()}),
-    parts_lines:(data.parts_lines&&data.parts_lines.length)?data.parts_lines:[{description:"",amount:""}],
-    labor_lines:(data.labor_lines&&data.labor_lines.length)?data.labor_lines:[{description:"",amount:""}],
-    tech_notes:(data.tech_notes&&data.tech_notes.length)?data.tech_notes:[""]});
-  const loadEstimate=async(wo)=>{
-    const{data}=await sb.from('estimates').select('*').eq('work_order_id',wo.id).maybeSingle();
-    setEst(data?normEst(wo,data):blankEstimate(wo));
-  };
-  const loadEstPhotos=async(woId)=>{
-    const{data}=await sb.from('photos').select('*').eq('entity_type','estimate_finding').like('entity_id',`${woId}__%`).order('created_at',{ascending:true});
-    const m={};(data||[]).filter(p=>p.entity_id.startsWith(`${woId}__`)).forEach(p=>{(m[p.entity_id]=m[p.entity_id]||[]).push(p);});
-    setEstPhotos(m);
-  };
-  const setEstField=(k,v)=>setEst(p=>({...p,[k]:v}));
-  const addFinding=()=>setEst(p=>({...p,findings:[...p.findings,{id:fid(),title:"",description:"",recommendations:[""]}]}));
-  const rmFinding=async(i)=>{
-    const f=(est.findings||[])[i];
-    if(f&&f.id){ // remove this finding's uploaded photos so they don't orphan in storage or reattach to a shifted finding
-      const key=`${jobsModal.id}__${f.id}`;
-      const {data:phs}=await sb.from('photos').select('id,storage_path').eq('entity_type','estimate_finding').eq('entity_id',key);
-      if(phs&&phs.length){
-        await sb.from('photos').delete().eq('entity_type','estimate_finding').eq('entity_id',key);
-        const paths=phs.map(p=>p.storage_path).filter(Boolean);
-        if(paths.length) await sb.storage.from('tms-photos').remove(paths);
-        loadEstPhotos(jobsModal.id);
-      }
-    }
-    setEst(p=>({...p,findings:p.findings.filter((_,idx)=>idx!==i)}));
-  };
-  const setFinding=(i,patch)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===i?{...f,...patch}:f)}));
-  const setFindingRec=(fi,ri,v)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===fi?{...f,recommendations:(f.recommendations||[]).map((r,rj)=>rj===ri?v:r)}:f)}));
-  const addFindingRec=(fi)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===fi?{...f,recommendations:[...(f.recommendations||[]),""]}:f)}));
-  const rmFindingRec=(fi,ri)=>setEst(p=>({...p,findings:p.findings.map((f,idx)=>idx===fi?{...f,recommendations:(f.recommendations||[]).filter((_,rj)=>rj!==ri)}:f)}));
-  const addLine=(kind)=>setEst(p=>({...p,[kind]:[...p[kind],{description:"",amount:""}]}));
-  const setLine=(kind,i,patch)=>setEst(p=>({...p,[kind]:p[kind].map((ln,idx)=>idx===i?{...ln,...patch}:ln)}));
-  const rmLine=(kind,i)=>setEst(p=>({...p,[kind]:p[kind].filter((_,idx)=>idx!==i)}));
-  const addNote=()=>setEst(p=>({...p,tech_notes:[...p.tech_notes,""]}));
-  const setNote=(i,v)=>setEst(p=>({...p,tech_notes:p.tech_notes.map((n,idx)=>idx===i?v:n)}));
-  const rmNote=(i)=>setEst(p=>({...p,tech_notes:p.tech_notes.filter((_,idx)=>idx!==i)}));
-  const saveEstimate=async()=>{
-    const payload={work_order_id:jobsModal.id,estimate_number:est.estimate_number||"",estimate_date:est.estimate_date||null,prepared_by:est.prepared_by||"",
-      customer:est.customer||"",customer_email:est.customer_email||"",vehicle_make:est.vehicle_make||"",trailer_number:est.trailer_number||"",unit_number:est.unit_number||"",vin:est.vin||"",driver:est.driver||"",phone:est.phone||"",location:est.location||"",
-      findings:est.findings||[],parts_lines:est.parts_lines||[],labor_lines:est.labor_lines||[],
-      tax_rate:Number(est.tax_rate)||0,tax_labor:!!est.tax_labor,cc_fee_enabled:!!est.cc_fee_enabled,cc_fee_rate:Number(est.cc_fee_rate)||0,
-      tech_notes:est.tech_notes||[],customer_authorized:!!est.customer_authorized,created_by:user.name,updated_at:new Date().toISOString()};
-    const res=await sb.from('estimates').upsert(payload,{onConflict:'work_order_id'}).select().single();
-    if(res.error){alert("Could not save estimate: "+res.error.message);return;}
-    setEst(normEst(jobsModal,res.data));
-    audit(user,"update","estimate",jobsModal.id,`${jobsModal.id} — ${est.customer}`,`total ${usd(estTotals(est).total)}`);
-    alert("Estimate saved.");
-  };
-  const printEstimate=async()=>{
-    // Open synchronously so pop-up blockers don't trip (same guard as printDot).
-    const w=window.open("","_blank");
-    if(!w){alert("Pop-up blocked — allow pop-ups to print.");return;}
-    const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-    const t=estTotals(est);
-    // Fetch finding photos fresh so the printout always reflects the latest uploads.
-    let photoMap={};
-    try{ const {data}=await sb.from('photos').select('entity_id,public_url,created_at').eq('entity_type','estimate_finding').like('entity_id',`${jobsModal.id}__%`).order('created_at',{ascending:true});
-      (data||[]).forEach(p=>{ if(p.entity_id.startsWith(`${jobsModal.id}__`)){(photoMap[p.entity_id]=photoMap[p.entity_id]||[]).push(p.public_url);} }); }catch(_){}
-    const findingsHtml=(est.findings||[]).map((f,i)=>{
-      const recs=(f.recommendations||[]).filter(r=>String(r).trim());
-      const recHtml=recs.length?`<div class="rec-h">Recommended Repair:</div><ul>${recs.map(r=>`<li>${esc(r)}</li>`).join("")}</ul>`:"";
-      const ph=photoMap[`${jobsModal.id}__${f.id}`]||[];
-      const phHtml=ph.length?`<div class="photos">${ph.map(u=>`<div class="ph"><img src="${esc(u)}"/></div>`).join("")}</div>`:"";
-      return `<div class="finding"><div class="ftitle">FINDING #${i+1} — ${esc((f.title||"").toUpperCase())}</div><div class="fdesc">${esc(f.description)}</div>${recHtml}${phHtml}</div>`;
-    }).join("")||`<div class="fdesc" style="color:#999">No findings recorded.</div>`;
-    const lineRows=arr=>(arr||[]).filter(l=>String(l.description||"").trim()||Number(l.amount)).map(l=>`<tr><td>${esc(l.description)}</td><td class="n">${usd(l.amount)}</td></tr>`).join("")||`<tr><td style="color:#999">—</td><td class="n">$0.00</td></tr>`;
-    const notesHtml=(est.tech_notes||[]).filter(n=>String(n).trim()).map(n=>`<div class="n"><span class="ck">✔</span><span>${esc(n)}</span></div>`).join("")||`<div class="n" style="color:#999">No notes.</div>`;
-    const kv=(k,v)=>`<div class="kv"><span class="k">${k}:</span><span class="v">${esc(v)}</span></div>`;
-    const html=`<!DOCTYPE html><html><head><title></title><style>
-      @page{size:letter;margin:0}
-      *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-      html,body{margin:0;padding:0}
-      body{font-family:"Helvetica Neue",Arial,sans-serif;color:#1a1a2e;font-size:11px;line-height:1.35;background:#fff}
-      .sheet{width:8.5in;margin:0 auto;padding:0 0 0.35in}
-      .pad{padding:0 0.4in}
-      .hdr{background:#17171b;color:#fff;padding:16px 0.4in 14px;display:flex;justify-content:space-between;align-items:center}
-      .brand .lincoln{font-size:30px;font-weight:900;letter-spacing:-0.5px;line-height:0.9;color:#fff;text-shadow:2px 2px 0 #c0392b;font-style:italic}
-      .brand .tt{font-size:12.5px;font-weight:800;letter-spacing:3px;color:#fff;margin-top:4px}
-      .brand .tt b{color:#e74c3c}
-      .brand .tag{font-size:12px;font-style:italic;color:#e74c3c;font-weight:700;margin-top:3px}
-      .brand .sub{font-size:9px;letter-spacing:1.5px;color:#cfcfd4;font-weight:700}
-      .hdr-right{text-align:right}
-      .hdr-right .row{display:flex;align-items:center;justify-content:flex-end;gap:7px;font-size:11.5px;font-weight:600;margin-bottom:4px}
-      .hdr-right .dot{width:15px;height:15px;border-radius:50%;background:#c0392b;display:inline-flex;align-items:center;justify-content:center;font-size:8px}
-      .hdr-right .emer{margin-top:6px}
-      .hdr-right .emer .big{color:#e74c3c;font-size:19px;font-weight:900;font-style:italic;line-height:1}
-      .hdr-right .emer .lil{font-size:8.5px;font-weight:700;letter-spacing:1px;color:#fff}
-      .sec-bar{display:inline-block;background:#c0392b;color:#fff;font-size:11px;font-weight:800;letter-spacing:0.5px;padding:4px 12px;margin:14px 0 8px}
-      .doc-title{text-align:center;margin:12px 0 2px}
-      .doc-title .t{font-size:17px;font-weight:900;letter-spacing:2px;color:#1a1a2e}
-      .doc-title .m{font-size:10px;color:#888;font-weight:600;letter-spacing:1px}
-      .two{display:flex;gap:14px}
-      .box{border:1px solid #d8d8dd;border-radius:3px;padding:10px 12px}
-      .box.cust{flex:0 0 40%}.box.veh{flex:1}
-      .cust .name{font-size:14px;font-weight:800;margin-bottom:5px}
-      .cust .line{font-size:11px;color:#444;margin-bottom:2px}
-      .veh-grid{display:grid;grid-template-columns:1fr 1fr;gap:3px 18px}
-      .kv{font-size:11px;display:flex;gap:5px;padding:2px 0;border-bottom:1px solid #eee}
-      .kv .k{font-weight:800;color:#1a1a2e;white-space:nowrap}.kv .v{color:#333}
-      .kv.wide{grid-column:1 / -1}
-      .finding{margin-bottom:12px;page-break-inside:avoid}
-      .finding .ftitle{color:#c0392b;font-size:12.5px;font-weight:900;letter-spacing:0.3px;margin-bottom:4px}
-      .finding .fdesc{font-size:11px;color:#333;margin-bottom:5px}
-      .finding .rec-h{color:#c0392b;font-size:10.5px;font-weight:800;margin:4px 0 2px}
-      .finding ul{margin:0 0 6px;padding-left:16px}
-      .finding li{font-size:10.5px;color:#333;margin-bottom:1px}
-      .photos{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:5px}
-      .photos .ph{aspect-ratio:4/3;border-radius:3px;overflow:hidden;background:#ececf0;border:1px solid #dcdce2}
-      .photos .ph img{width:100%;height:100%;object-fit:cover;display:block}
-      .est-row{display:flex;gap:14px;align-items:flex-start}
-      .est-col{flex:1}.est-col.sum{flex:0 0 34%}
-      table.est{width:100%;border-collapse:collapse}
-      table.est th{text-align:left;font-size:9.5px;font-weight:800;color:#666;letter-spacing:0.5px;border-bottom:1.5px solid #1a1a2e;padding:4px 4px}
-      table.est th.n,table.est td.n{text-align:right;white-space:nowrap}
-      table.est td{font-size:11px;padding:5px 4px;border-bottom:1px solid #eee;vertical-align:top}
-      .tbl-total{background:#17171b;color:#fff;display:flex;justify-content:space-between;padding:7px 10px;font-size:12px;font-weight:800;letter-spacing:0.5px;margin-top:4px}
-      .summary .srow{display:flex;justify-content:space-between;font-size:11px;padding:3px 0}
-      .summary .srow.b{font-weight:800}
-      .summary .srow.tax{color:#c0392b;font-weight:700}
-      .summary .div{border-top:1px solid #ddd;margin:3px 0}
-      .total-due{background:#17171b;color:#fff;text-align:center;padding:10px;margin-top:6px;border-radius:3px}
-      .total-due .l{color:#e74c3c;font-size:12px;font-weight:800;letter-spacing:2px}
-      .total-due .a{font-size:26px;font-weight:900;line-height:1.1}
-      .total-due .note{background:#c0392b;color:#fff;font-size:8px;font-weight:700;letter-spacing:0.5px;padding:4px;margin-top:6px}
-      .bottom{display:flex;gap:14px;margin-top:14px;page-break-inside:avoid}
-      .bottom .col{flex:1;border:1px solid #d8d8dd;border-radius:3px;padding:10px 12px}
-      .notes .n{font-size:10.5px;color:#333;margin-bottom:4px;display:flex;gap:6px}
-      .notes .n .ck{color:#c0392b;font-weight:900}
-      .appr .auth{font-size:11px;color:#333;margin-bottom:10px}
-      .appr .amt{font-size:13px;font-weight:800;margin-bottom:16px}
-      .appr .amt b{color:#c0392b;font-size:15px}
-      .appr .sig{display:flex;gap:14px}
-      .appr .sig .cell{flex:1;border-top:1px solid #333;padding-top:3px;font-size:9px;color:#666}
-      .appr .sig .cell.date{flex:0 0 32%}
-      .ftr{background:#17171b;color:#fff;margin-top:16px;padding:12px 0.4in;display:flex;align-items:center;justify-content:space-between}
-      .ftr .svcs{display:flex;gap:16px}
-      .ftr .svc{text-align:center;font-size:7.5px;font-weight:700;letter-spacing:0.5px;color:#cfcfd4}
-      .ftr .svc .i{font-size:15px;display:block;margin-bottom:2px}
-      .ftr .ins{text-align:right}
-      .ftr .ins .badge{border:1.5px solid #c0392b;border-radius:20px;padding:3px 12px;font-size:10px;font-weight:800;color:#fff;display:inline-block}
-      .ftr .ins .tl{font-size:8px;font-weight:700;letter-spacing:1px;color:#cfcfd4;margin-top:4px}
-      .ftr .ins .tl b{color:#e74c3c}
-    </style></head><body>
-    <div class="sheet">
-      <div class="hdr">
-        <div class="brand">
-          <div class="lincoln">LINCOLN</div>
-          <div class="tt">TRUCK <b>&amp;</b> TRAILER <b>REPAIR</b></div>
-          <div class="tag">We Keep You Rolling.</div>
-          <div class="sub">24/7 EMERGENCY ROAD SERVICE</div>
-        </div>
-        <div class="hdr-right">
-          <div class="row"><span class="dot">✆</span> (402) 409-1984</div>
-          <div class="row"><span class="dot">✉</span> service@lincolntruckrepair.com</div>
-          <div class="row"><span class="dot">⌂</span> Lincoln, NE · 5940 Colfax Ave</div>
-          <div class="emer"><div class="big">24/7</div><div class="lil">ON-SITE REPAIR WHEN YOU NEED US MOST</div></div>
-        </div>
-      </div>
-      <div class="pad">
-        <div class="doc-title">
-          <div class="t">REPAIR ESTIMATE</div>
-          <div class="m">Estimate #${esc(est.estimate_number||jobsModal.id)} &nbsp;·&nbsp; Date: ${esc(fmtDay(est.estimate_date||todayLocal()))}${est.prepared_by?` &nbsp;·&nbsp; Prepared by: ${esc(est.prepared_by)}`:""}</div>
-        </div>
-        <div class="sec-bar">CUSTOMER INFORMATION</div>
-        <div class="two">
-          <div class="box cust">
-            <div class="name">${esc(est.customer)||"&nbsp;"}</div>
-            ${est.customer_email?`<div class="line">${esc(est.customer_email)}</div>`:""}
-          </div>
-          <div class="box veh">
-            <div class="veh-grid">
-              ${kv("Truck",est.vehicle_make)}${kv("Unit #",est.unit_number)}
-              ${kv("Trailer #",est.trailer_number)}${kv("VIN",est.vin)}
-              ${kv("Driver",est.driver)}${kv("Phone",est.phone)}
-              <div class="kv wide"><span class="k">Location:</span><span class="v">${esc(est.location)}</span></div>
-            </div>
-          </div>
-        </div>
-        <div class="sec-bar">INSPECTION FINDINGS</div>
-        ${findingsHtml}
-        <div class="sec-bar">ESTIMATE</div>
-        <div class="est-row">
-          <div class="est-col">
-            <table class="est"><thead><tr><th>PARTS</th><th class="n">AMOUNT</th></tr></thead><tbody>${lineRows(est.parts_lines)}</tbody></table>
-            <div class="tbl-total"><span>PARTS TOTAL</span><span>${usd(t.parts)}</span></div>
-            <table class="est" style="margin-top:12px"><thead><tr><th>LABOR</th><th class="n">AMOUNT</th></tr></thead><tbody>${lineRows(est.labor_lines)}</tbody></table>
-            <div class="tbl-total"><span>LABOR TOTAL</span><span>${usd(t.labor)}</span></div>
-          </div>
-          <div class="est-col sum">
-            <div class="sec-bar" style="margin-top:0">ESTIMATE SUMMARY</div>
-            <div class="summary">
-              <div class="srow"><span>Parts Total</span><span>${usd(t.parts)}</span></div>
-              <div class="srow"><span>Labor Total</span><span>${usd(t.labor)}</span></div>
-              <div class="div"></div>
-              <div class="srow b"><span>SUBTOTAL</span><span>${usd(t.subtotal)}</span></div>
-              <div class="srow tax"><span>Sales Tax (${esc(est.tax_rate)}%)${est.tax_labor?"":" — parts only"}</span><span>${usd(t.tax)}</span></div>
-              <div class="div"></div>
-              <div class="srow b"><span>SUBTOTAL WITH TAX</span><span>${usd(t.withTax)}</span></div>
-              ${est.cc_fee_enabled?`<div class="srow"><span>Credit Card Fee (${esc(est.cc_fee_rate)}%)</span><span>${usd(t.ccFee)}</span></div>`:""}
-              <div class="total-due">
-                <div class="l">TOTAL DUE</div>
-                <div class="a">${usd(t.total)}</div>
-                <div class="note">TOTAL INCLUDES SALES TAX${est.cc_fee_enabled?` AND ${esc(est.cc_fee_rate)}% CREDIT CARD FEE`:""}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="bottom">
-          <div class="col notes">
-            <div class="sec-bar" style="margin-top:0">TECHNICIAN NOTES</div>
-            ${notesHtml}
-          </div>
-          <div class="col appr">
-            <div class="sec-bar" style="margin-top:0">CUSTOMER APPROVAL</div>
-            <div class="auth">I authorize the above repairs to be performed.</div>
-            <div class="amt">Approved Amount: <b>${usd(t.total)}</b></div>
-            <div class="sig"><div class="cell">Signature</div><div class="cell date">Date</div></div>
-          </div>
-        </div>
-      </div>
-      <div class="ftr">
-        <div class="svcs">
-          <div class="svc"><span class="i">🔧</span>ENGINE</div>
-          <div class="svc"><span class="i">🛑</span>BRAKES</div>
-          <div class="svc"><span class="i">⚡</span>ELECTRICAL</div>
-          <div class="svc"><span class="i">💧</span>HYDRAULICS</div>
-          <div class="svc"><span class="i">🛞</span>TIRES</div>
-          <div class="svc"><span class="i">💻</span>DIAGNOSTICS</div>
-        </div>
-        <div class="ins">
-          <div class="badge">FULLY INSURED</div>
-          <div class="tl"><b>FAST · RELIABLE · PROFESSIONAL</b><br>KEEPING YOU ON THE ROAD</div>
-        </div>
-      </div>
-    </div>
-    <script>window.onload=function(){setTimeout(function(){window.print()},300)}<\/script>
-    </body></html>`;
-    w.document.write(html);w.document.close();w.focus();
   };
   const printDot=async()=>{
     // Open the print window synchronously (before any await) so pop-up blockers don't trip.
@@ -2503,102 +2615,8 @@ const WorkOrders = () => {
               </div>
             </div>
           )}
-          {jobTab==="estimate"&&est&&(()=>{ const t=estTotals(est); return (
-            <div>
-              <div style={{border:"1px solid #ddd",borderRadius:8,padding:14,marginBottom:14,background:"#fff"}}>
-                <div style={{fontSize:11,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Estimate</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-                  <Field label="Estimate number" value={est.estimate_number||""} onChange={v=>setEstField("estimate_number",v)}/>
-                  <Field label="Date" value={est.estimate_date||""} onChange={v=>setEstField("estimate_date",v)} type="date"/>
-                  <Field label="Prepared by" value={est.prepared_by||""} onChange={v=>setEstField("prepared_by",v)}/>
-                </div>
-              </div>
-              <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
-                <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Customer</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                  <Field label="Customer" value={est.customer||""} onChange={v=>setEstField("customer",v)}/>
-                  <Field label="Customer email" value={est.customer_email||""} onChange={v=>setEstField("customer_email",v)}/>
-                </div>
-              </div>
-              <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
-                <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Vehicle</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-                  <Field label="Truck (year/make/model)" value={est.vehicle_make||""} onChange={v=>setEstField("vehicle_make",v)} placeholder="2021 International LT625"/>
-                  <Field label="Unit #" value={est.unit_number||""} onChange={v=>setEstField("unit_number",v)}/>
-                  <Field label="Trailer #" value={est.trailer_number||""} onChange={v=>setEstField("trailer_number",v)}/>
-                  <Field label="VIN" value={est.vin||""} onChange={v=>setEstField("vin",v)}/>
-                  <Field label="Driver" value={est.driver||""} onChange={v=>setEstField("driver",v)}/>
-                  <Field label="Phone" value={est.phone||""} onChange={v=>setEstField("phone",v)}/>
-                </div>
-                <Field label="Location" value={est.location||""} onChange={v=>setEstField("location",v)} placeholder="Love's Truck Care, 9650 S 20th St…"/>
-              </div>
-              <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,margin:"4px 0 8px"}}>Inspection Findings</div>
-              {(est.findings||[]).map((f,fi)=>(
-                <div key={f.id||fi} style={{border:"1px solid #eee",borderRadius:8,padding:14,marginBottom:12}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                    <div style={{fontSize:13,fontWeight:800,color:"#c0392b"}}>Finding #{fi+1}</div>
-                    <button onClick={()=>rmFinding(fi)} style={{background:"#fdecea",color:"#c0392b",border:"none",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:700}}>Remove</button>
-                  </div>
-                  <Field label="Title" value={f.title||""} onChange={v=>setFinding(fi,{title:v})} placeholder="Power Steering System Leak"/>
-                  <Field label="Description" value={f.description||""} onChange={v=>setFinding(fi,{description:v})} type="textarea"/>
-                  <div style={{fontSize:12,fontWeight:700,color:"#888",margin:"6px 0 4px"}}>Recommended repair</div>
-                  {(f.recommendations||[]).map((r,ri)=>(
-                    <div key={ri} style={{display:"flex",gap:8,marginBottom:6}}>
-                      <input value={r} onChange={e=>setFindingRec(fi,ri,e.target.value)} placeholder="Replace leaking power steering hoses" style={{flex:1,padding:"8px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
-                      <button onClick={()=>rmFindingRec(fi,ri)} style={{background:"#f4f4f4",border:"none",borderRadius:6,padding:"0 10px",cursor:"pointer",color:"#888"}}>×</button>
-                    </div>
-                  ))}
-                  <button onClick={()=>addFindingRec(fi)} style={{background:"none",border:"1px dashed #c0392b",color:"#c0392b",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:12,fontWeight:600,marginBottom:8}}>+ Add repair line</button>
-                  <div style={{marginTop:6}}><PhotoSection entityType="estimate_finding" entityId={`${jobsModal.id}__${f.id}`} label="📷 Finding photos" photos={estPhotos[`${jobsModal.id}__${f.id}`]||[]} onChanged={()=>loadEstPhotos(jobsModal.id)}/></div>
-                </div>
-              ))}
-              <button onClick={addFinding} style={{background:"#c0392b",color:"#fff",border:"none",borderRadius:8,padding:"8px 14px",cursor:"pointer",fontSize:13,fontWeight:600,marginBottom:16}}>+ Add finding</button>
-              {["parts_lines","labor_lines"].map(kind=>(
-                <div key={kind} style={{marginBottom:14}}>
-                  <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>{kind==="parts_lines"?"Parts":"Labor"}</div>
-                  {(est[kind]||[]).map((ln,i)=>(
-                    <div key={i} style={{display:"flex",gap:8,marginBottom:6,alignItems:"center"}}>
-                      <input value={ln.description||""} onChange={e=>setLine(kind,i,{description:e.target.value})} placeholder={kind==="parts_lines"?"Power Steering Hoses (2)":"Mobile Service Call Out"} style={{flex:1,padding:"8px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
-                      <div style={{position:"relative"}}><span style={{position:"absolute",left:8,top:9,color:"#888",fontSize:13}}>$</span><input value={ln.amount} onChange={e=>setLine(kind,i,{amount:e.target.value})} inputMode="decimal" placeholder="0.00" style={{width:120,padding:"8px 10px 8px 18px",border:"1px solid #ddd",borderRadius:6,fontSize:13,textAlign:"right"}}/></div>
-                      <button onClick={()=>rmLine(kind,i)} style={{background:"#f4f4f4",border:"none",borderRadius:6,padding:"0 10px",minHeight:34,cursor:"pointer",color:"#888"}}>×</button>
-                    </div>
-                  ))}
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <button onClick={()=>addLine(kind)} style={{background:"none",border:"1px dashed #c0392b",color:"#c0392b",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:12,fontWeight:600}}>+ Add line</button>
-                    <div style={{fontSize:13,fontWeight:800}}>{kind==="parts_lines"?"Parts":"Labor"} total: {usd(kind==="parts_lines"?t.parts:t.labor)}</div>
-                  </div>
-                </div>
-              ))}
-              <div style={{background:"#f8f9fa",borderRadius:10,padding:16,marginBottom:14}}>
-                <div style={{fontSize:11,fontWeight:800,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Tax &amp; Fees</div>
-                <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"center",marginBottom:10}}>
-                  <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6}}>Sales tax %<input value={est.tax_rate} onChange={e=>setEstField("tax_rate",e.target.value)} inputMode="decimal" style={{width:70,padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/></label>
-                  <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={!!est.tax_labor} onChange={e=>setEstField("tax_labor",e.target.checked)} style={{width:16,height:16,accentColor:"#c0392b"}}/>Tax labor too</label>
-                  <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={!!est.cc_fee_enabled} onChange={e=>setEstField("cc_fee_enabled",e.target.checked)} style={{width:16,height:16,accentColor:"#c0392b"}}/>Credit card fee</label>
-                  <label style={{fontSize:13,color:"#555",display:"flex",alignItems:"center",gap:6}}>Fee %<input value={est.cc_fee_rate} onChange={e=>setEstField("cc_fee_rate",e.target.value)} inputMode="decimal" disabled={!est.cc_fee_enabled} style={{width:70,padding:"6px 8px",border:"1px solid #ddd",borderRadius:6,fontSize:13,opacity:est.cc_fee_enabled?1:0.5}}/></label>
-                </div>
-                <div style={{borderTop:"1px solid #e5e5e5",paddingTop:10,maxWidth:320,marginLeft:"auto"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"2px 0"}}><span>Subtotal</span><span>{usd(t.subtotal)}</span></div>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"2px 0",color:"#c0392b"}}><span>Sales tax ({est.tax_rate}%){est.tax_labor?"":" — parts only"}</span><span>{usd(t.tax)}</span></div>
-                  {est.cc_fee_enabled&&<div style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"2px 0"}}><span>Card fee ({est.cc_fee_rate}%)</span><span>{usd(t.ccFee)}</span></div>}
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:800,borderTop:"2px solid #1a1a2e",marginTop:6,paddingTop:6}}><span>Total due</span><span>{usd(t.total)}</span></div>
-                </div>
-              </div>
-              <div style={{fontSize:12,fontWeight:800,color:"#c0392b",textTransform:"uppercase",letterSpacing:0.5,margin:"4px 0 8px"}}>Technician Notes</div>
-              {(est.tech_notes||[]).map((n,i)=>(
-                <div key={i} style={{display:"flex",gap:8,marginBottom:6}}>
-                  <input value={n} onChange={e=>setNote(i,e.target.value)} placeholder="Note visible on the estimate" style={{flex:1,padding:"8px 10px",border:"1px solid #ddd",borderRadius:6,fontSize:13}}/>
-                  <button onClick={()=>rmNote(i)} style={{background:"#f4f4f4",border:"none",borderRadius:6,padding:"0 10px",cursor:"pointer",color:"#888"}}>×</button>
-                </div>
-              ))}
-              <button onClick={addNote} style={{background:"none",border:"1px dashed #c0392b",color:"#c0392b",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:12,fontWeight:600,marginBottom:16}}>+ Add note</button>
-              <div style={{display:"flex",gap:10,marginTop:8,flexWrap:"wrap",alignItems:"center"}}>
-                <button onClick={saveEstimate} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>💾 Save Estimate</button>
-                <button onClick={printEstimate} style={{padding:"10px 18px",background:"#1a1a2e",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>🖨 Print</button>
-                <span style={{fontSize:11,color:"#888",lineHeight:1.4}}>Save before printing to keep the latest edits. In the print dialog, uncheck <strong>"Headers and footers"</strong> for a clean sheet.</span>
-              </div>
-            </div>
-          ); })()}
+          {/* Estimate tab: reusable editor, kept mounted (hidden) while the modal is open so edits survive tab switches; self-loads per WO via key. */}
+          <div style={{display:jobTab==="estimate"?"block":"none"}}><EstimateEditor key={jobsModal.id} workOrderId={jobsModal.id} wo={jobsModal} customers={customers} user={user}/></div>
           {jobTab==="outbound"&&outb&&(
             <div style={{padding:"4px 2px"}}>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
@@ -3636,24 +3654,65 @@ const Inspections = () => {
   );
 };
 const Estimates = () => {
-  const [wos,setWos]=useState([]); const [jobs,setJobs]=useState([]); const [loading,setLoading]=useState(true);
-  useEffect(()=>{Promise.all([sb.from('work_orders').select('*').in('status',['Waiting list']).neq('is_voided',true),sb.from('jobs').select('work_order_id,labor')]).then(([w,j])=>{setWos(w.data||[]);setJobs(j.data||[]);setLoading(false);});},[]);
+  const user = useContext(UserCtx);
+  const [rows,setRows]=useState([]); const [wos,setWos]=useState([]); const [customers,setCustomers]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [editWoId,setEditWoId]=useState(null); const [editWo,setEditWo]=useState(null);
+  const [picker,setPicker]=useState(false); const [pickQ,setPickQ]=useState("");
+  const load=async()=>{
+    setLoading(true);
+    const [e,w,c]=await Promise.all([
+      sb.from('estimates').select('*').order('updated_at',{ascending:false}),
+      sb.from('work_orders').select('*').neq('is_voided',true),
+      sb.from('customers').select('*')
+    ]);
+    setRows(e.data||[]); setWos(w.data||[]); setCustomers(c.data||[]); setLoading(false);
+  };
+  useEffect(()=>{load();},[]);
+  const woLabel=w=>`${w.id} · ${w.customer||"—"}${w.unit_number?` · Unit ${w.unit_number}`:""}`;
+  const estByWo=id=>rows.find(r=>r.work_order_id===id);
+  const openEditor=(woId)=>{ setEditWoId(woId); setEditWo(wos.find(w=>w.id===woId)||{id:woId}); };
+  const closeEditor=()=>{ setEditWoId(null); setEditWo(null); load(); };
   if(loading) return <Loading/>;
-  const hrs=woHoursMap(jobs);
-  return (<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1></div>
-    <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
-      <thead><tr><TH c="Estimate Nr."/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/></tr></thead>
-      <tbody>{wos.length===0?<tr><td colSpan={5} style={{textAlign:"center",padding:40,color:"#aaa"}}>No estimates found.</td></tr>:wos.map((w,i)=>(
-        <tr key={w.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>EST-{String(w.id).replace(/^WO-?/,"")}</td>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.id}</td>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.customer}</td>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"}}>{w.unit_number}</td>
-          <td style={{padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5",fontWeight:600,color:"#e67e22"}}>${Math.round(woRevenue(w,hrs[w.id])).toLocaleString()}</td>
+  const td={padding:"12px 16px",fontSize:13,borderBottom:"1px solid #f5f5f5"};
+  const filteredWos=wos.filter(w=>woLabel(w).toLowerCase().includes(pickQ.trim().toLowerCase()));
+  return (<div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+      <h1 style={{margin:0,fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Estimates</h1>
+      <button onClick={()=>{setPickQ("");setPicker(true);}} style={{padding:"10px 18px",background:"#c0392b",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:14}}>+ New Estimate</button>
+    </div>
+    <div style={{background:"#fff",borderRadius:12,overflow:"auto",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:760}}>
+      <thead><tr><TH c="Estimate #"/><TH c="WO"/><TH c="Customer"/><TH c="Unit #"/><TH c="Total"/><TH c="Updated"/><TH c=""/></tr></thead>
+      <tbody>{rows.length===0?<tr><td colSpan={7} style={{textAlign:"center",padding:40,color:"#aaa"}}>No estimates yet — click "+ New Estimate" to create one and attach it to a work order.</td></tr>:rows.map((r,i)=>{ const t=estTotals(r); return (
+        <tr key={r.id} style={{background:i%2===0?"#fff":"#fafafa"}}>
+          <td style={td}>{r.estimate_number||("EST-"+String(r.work_order_id).replace(/^WO-?/,""))}</td>
+          <td style={td}>{r.work_order_id}</td>
+          <td style={td}>{r.customer}</td>
+          <td style={td}>{r.unit_number}</td>
+          <td style={{...td,fontWeight:700,color:"#27ae60"}}>{usd(t.total)}</td>
+          <td style={{...td,color:"#888"}}>{r.updated_at?fmtDay(r.updated_at.slice(0,10)):""}</td>
+          <td style={td}><button onClick={()=>openEditor(r.work_order_id)} style={{padding:"6px 14px",background:"#fff",color:"#c0392b",border:"1px solid #c0392b",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700}}>Edit</button></td>
         </tr>
-      ))}</tbody>
-    </table></div></div>);
+      );})}</tbody>
+    </table></div>
+    {picker&&<Modal title="New estimate — attach to a work order" onClose={()=>setPicker(false)} wide>
+      <input value={pickQ} onChange={e=>setPickQ(e.target.value)} placeholder="Search work orders (id, customer, unit)…" style={{width:"100%",padding:"10px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:14}}/>
+      <div style={{maxHeight:"52vh",overflow:"auto",marginTop:12}}>
+        {filteredWos.length===0?<div style={{color:"#aaa",padding:20,textAlign:"center"}}>No work orders match.</div>:filteredWos.map(w=>{ const has=estByWo(w.id); return (
+          <button key={w.id} onClick={()=>{setPicker(false);openEditor(w.id);}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,width:"100%",textAlign:"left",padding:"10px 12px",border:"1px solid #eee",borderRadius:8,marginBottom:6,background:"#fff",cursor:"pointer"}}>
+            <span style={{fontSize:13}}>{woLabel(w)}</span>
+            <span style={{fontSize:11,fontWeight:700,whiteSpace:"nowrap",color:has?"#e67e22":"#27ae60"}}>{has?"Has estimate — edit":"+ Create"}</span>
+          </button>
+        );})}
+      </div>
+      <p style={{fontSize:12,color:"#888",marginTop:10}}>An estimate attaches to a work order. No WO yet? Create it in the Work Orders tab first, then come back here.</p>
+    </Modal>}
+    {editWoId&&<Modal title={`Estimate · ${editWoId}`} onClose={closeEditor} xwide>
+      <EstimateEditor workOrderId={editWoId} wo={editWo} customers={customers} user={user} onSaved={load}/>
+    </Modal>}
+  </div>);
 };
+
 const Inventory = () => (<div><h1 style={{margin:"0 0 20px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>Inventory</h1><div style={{background:"#fff",borderRadius:12,padding:60,textAlign:"center",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}><div style={{fontSize:48,marginBottom:16}}>🔧</div><h3 style={{margin:"0 0 8px"}}>Coming Soon</h3><p style={{color:"#888"}}>Parts catalog, stock levels, reorder alerts.</p></div></div>);
 // ─── ORDER PARTS ──────────────────────────────────────────────────────────────
 // Simple shared reorder queue: parts the shop needs to order. Not tied to a work order.
