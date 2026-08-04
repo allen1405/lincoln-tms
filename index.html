@@ -960,12 +960,27 @@ const FindingsEditor = ({findings, onChange}) => {
     </div>
   );
 };
+// Signature for printouts is looked up by the inspector NAME on the form — not the
+// logged-in session. On the shared shop computer whoever is signed in is often not the
+// mechanic who did the inspection, and stamping the session user's signature put the
+// wrong mechanic's signature on printed forms. No user match (or no saved signature)
+// leaves the line blank for a wet-ink signature — never fall back to the session user.
+async function sigForInspector(name) {
+  const n = String(name || "").trim();
+  if (!n) return "";
+  try {
+    // Escape ilike wildcards — a % or _ typed into the free-text inspector field must not
+    // pattern-match some other user and stamp their signature.
+    const {data} = await sb.from('users').select('signature').ilike('name', n.replace(/[%_\\]/g, m => '\\' + m)).limit(1);
+    return (data && data[0] && data[0].signature) || "";
+  } catch(_) { return ""; }
+}
 // Print the page-2 "Inspection Results" sheet alone. rec: {unit_number, customer, inspection_date, inspector, findings[]}.
 async function printInspectionResults(rec, user) {
   const w = window.open("", "_blank");
   if (!w) { alert("Pop-up blocked — allow pop-ups to print."); return; }
   const esc = s => String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  let sigImg = ""; try { const {data} = await sb.from('users').select('signature').eq('id', user.id).maybeSingle(); sigImg = (data && data.signature) || ""; } catch(_) {}
+  const sigImg = await sigForInspector(rec.inspector);
   const findings = (rec.findings || []);
   const rowsHtml = findings.map(f => `<tr><td class="chk">${f.checked ? "☑" : "☐"}</td><td class="txt">${esc(f.text)}</td></tr>`).join("")
     + Array.from({length: Math.max(0, 24 - findings.length)}).map(() => `<tr><td class="chk">☐</td><td class="txt">&nbsp;</td></tr>`).join("");
@@ -1004,7 +1019,7 @@ async function printOutboundInspection(rec, user) {
   const esc = s => String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   const chk = b => b ? "☑" : "☐";
   const ynYes = rec.do_new_annual === true, ynNo = rec.do_new_annual === false;
-  let sigImg = ""; try { const {data} = await sb.from('users').select('signature').eq('id', user.id).maybeSingle(); sigImg = (data && data.signature) || ""; } catch(_) {}
+  const sigImg = await sigForInspector(rec.inspector || rec.done_by);
   const items = rec.checklist || [];
   const half = Math.ceil(items.length / 2);
   const colRows = arr => arr.map(it => `<tr><td class="c">${chk(it.checked)}</td><td class="l">${esc(it.label)}</td><td class="q">${esc(it.note)}</td></tr>`).join("");
@@ -1803,8 +1818,8 @@ const WorkOrders = () => {
     const idCheck=v=>v&&String(v).trim()?"☑":"☐";
     // Report number falls back to the WO id if the shop doesn't use a separate report number.
     const reportNo=(dot.report_number||"").trim()||jobsModal.id;
-    // The signing mechanic's saved signature (fetched fresh — it's not kept in the session).
-    let sigImg=""; try{ const {data}=await sb.from('users').select('signature').eq('id',user.id).maybeSingle(); sigImg=(data&&data.signature)||""; }catch(_){}
+    // Signature of the inspector named on the form, not the session user (see sigForInspector).
+    const sigImg=await sigForInspector(dot.inspector);
     const renderSection=sec=>`<div class="sec"><div class="sec-hd">${sec.num}. ${esc(sec.title.toUpperCase())}</div><table class="comp"><tbody>${sec.items.map((it,i)=>{const cv=dot.components[it.key]||{};const ok=cv.status==="OK"?"✓":cv.status==="N/A"?"NA":"";const nr=cv.status==="Needs repair"?"✗":"";const rd=cv.repaired_date||"";const letter=sec.items.length>1?String.fromCharCode(97+i)+". ":"";return `<tr><td class="m ok">${ok}</td><td class="m nr">${nr}</td><td class="rd">${esc(rd)}</td><td class="lbl-item">${esc(letter)}${esc(it.label)}</td></tr>`;}).join("")}</tbody></table></div>`;
     // 4-column distribution mirrors Loves/TA forms — fits on one US Letter page reliably.
     const cols=[[],[],[],[]];
@@ -4088,7 +4103,7 @@ const saveSession = (u) => {
 
 // ─── SIGNATURE PAD + MY SIGNATURE PAGE ────────────────────────────────────────
 // Draw-once signature, saved to the user's profile (users.signature, a PNG data URL),
-// stamped onto DOT printouts by printDot.
+// stamped onto inspection printouts when this user is the named inspector (sigForInspector).
 const SignaturePad = ({onSave}) => {
   const ref=React.useRef(null); const drawing=React.useRef(false); const last=React.useRef(null);
   const [dirty,setDirty]=useState(false);
@@ -4124,7 +4139,7 @@ const MySignature = () => {
   return (
     <div>
       <h1 style={{margin:"0 0 6px",fontSize:26,fontWeight:800,color:"#1a1a2e"}}>My Signature</h1>
-      <p style={{margin:"0 0 18px",color:"#888",fontSize:13}}>Sign once here and it auto-applies to the bottom of any DOT inspection form <strong>you</strong> print.</p>
+      <p style={{margin:"0 0 18px",color:"#888",fontSize:13}}>Sign once here and it auto-applies to the bottom of inspection forms that list <strong>you</strong> as the inspector — no matter who prints them.</p>
       <div style={{background:"#fff",borderRadius:12,padding:20,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",maxWidth:560}}>
         {sig&&<div style={{marginBottom:18}}>
           <div style={{fontSize:12,fontWeight:700,color:"#888",textTransform:"uppercase",letterSpacing:0.5,marginBottom:6}}>Current signature</div>
